@@ -7,9 +7,10 @@ from datetime import datetime
 from dataclasses import dataclass, asdict
 import numpy as np
 from urllib.parse import quote
+import logging
 
 # YouTube transcript fetching
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
 # LangChain and Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -27,6 +28,10 @@ from pydantic import BaseModel, Field
 # RDF and ontologies
 from rdflib import Graph, Namespace, URIRef, Literal, RDF, RDFS, OWL
 from rdflib.namespace import FOAF, SKOS, DC, DCTERMS
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Define namespaces
 SCHEMA = Namespace("https://schema.org/")
@@ -76,13 +81,13 @@ class RDFYouTubeKnowledgeGraphExtractor:
     def __init__(self, google_api_key: str, mongodb_uri: str, db_name: str = "youtube_rdf_kg"):
         # Initialize LLMs
         self.extractor_llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-exp",
+            model="gemini-2.0-flash",
             google_api_key=google_api_key,
             temperature=0.1
         )
         
         self.critic_llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-exp",
+            model="gemini-2.0-flash",
             google_api_key=google_api_key,
             temperature=0.2
         )
@@ -188,22 +193,36 @@ class RDFYouTubeKnowledgeGraphExtractor:
         
         return entity.uri, False
     
-    def fetch_transcript(self, video_id: str) -> List[TranscriptSegment]:
-        """Fetch transcript from YouTube video"""
+    def fetch_transcript(self, video_id: str) -> Optional[List[TranscriptSegment]]:
+        """Fetch transcript from YouTube video with improved error handling"""
         try:
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+            logger.info(f"Fetching transcript for video: {video_id}")
+            
+            # First, try to get the list of available transcripts
+            transcript_data = YouTubeTranscriptApi().fetch(video_id, languages=['en'])
+            logger.info(f"Fetched English transcript for {video_id}")
+            
             segments = [
                 TranscriptSegment(
-                    text=item['text'],
-                    start=item['start'],
-                    duration=item['duration']
+                    text=item.text,
+                    start=item.start,
+                    duration=item.duration
                 )
-                for item in transcript_list
+                for item in transcript_data.snippets
             ]
+            
+            logger.info(f"Successfully fetched {len(segments)} transcript segments")
             return segments
+            
+        except TranscriptsDisabled:
+            logger.error(f"Transcripts are disabled for video {video_id}")
+            return None
+        except NoTranscriptFound:
+            logger.error(f"No transcript found for video {video_id}")
+            return None
         except Exception as e:
-            print(f"Error fetching transcript: {e}")
-            raise
+            logger.error(f"Error fetching transcript for {video_id}: {e}")
+            return None
     
     def _create_extraction_prompt(self) -> ChatPromptTemplate:
         """Create prompt for RDF-based knowledge graph extraction"""
@@ -222,17 +241,38 @@ class RDFYouTubeKnowledgeGraphExtractor:
             - skos:broader, skos:narrower, skos:related
             - schema:about, schema:mentions
             
-            For each entity:
-            1. Generate a unique URI
-            2. Assign appropriate RDF types
-            3. Include multiple labels if the entity is referred to differently
-            4. Add relevant properties
+            IMPORTANT: Return a JSON object with this EXACT structure:
+            {{
+                "entities": [
+                    {{
+                        "uri": "https://knowledge-graph.example.com/entity_name_hash",
+                        "label": "Entity Name",
+                        "types": ["schema:Person", "foaf:Person"],
+                        "properties": {{"description": "Brief description"}},
+                        "alternate_labels": ["alt name 1", "alt name 2"]
+                    }}
+                ],
+                "relationships": [
+                    {{
+                        "subject_uri": "https://knowledge-graph.example.com/entity1",
+                        "predicate": "schema:knows",
+                        "object_uri": "https://knowledge-graph.example.com/entity2",
+                        "properties": {{}}
+                    }}
+                ],
+                "provenance": {{
+                    "https://knowledge-graph.example.com/entity1": [
+                        {{
+                            "video_id": "VIDEO_ID",
+                            "timestamp": 12.5,
+                            "text_snippet": "relevant text",
+                            "confidence": 0.95
+                        }}
+                    ]
+                }}
+            }}
             
-            For relationships:
-            1. Use standard predicates when possible
-            2. Include properties for qualified relationships
-            
-            Track provenance for everything with video_id, timestamp, and text_snippet."""),
+            Do NOT use @id, @type or other JSON-LD syntax. Use the exact field names shown above."""),
             ("human", """Extract an RDF-based knowledge graph from this YouTube transcript.
             
             Video ID: {video_id}
@@ -240,7 +280,7 @@ class RDFYouTubeKnowledgeGraphExtractor:
             Transcript segments:
             {transcript}
             
-            Return a JSON with 'entities', 'relationships', and 'provenance' following the RDF model.""")
+            Return ONLY a valid JSON object with 'entities', 'relationships', and 'provenance' fields as shown in the example.""")
         ])
     
     def _create_critique_prompt(self) -> ChatPromptTemplate:
@@ -254,7 +294,17 @@ class RDFYouTubeKnowledgeGraphExtractor:
             3. Relationships that could use more specific predicates
             4. Missing inverse relationships
             5. Opportunities for transitive relationships
-            6. Better type hierarchies using rdfs:subClassOf"""),
+            6. Better type hierarchies using rdfs:subClassOf
+            
+            Return a JSON object with this structure:
+            {{
+                "missing_entities": ["entity description"],
+                "missing_relationships": ["relationship description"],
+                "incorrect_entities": ["entity issue"],
+                "incorrect_relationships": ["relationship issue"],
+                "entity_resolution_suggestions": ["suggestion"],
+                "ontology_improvements": ["improvement"]
+            }}"""),
             ("human", """Review this RDF knowledge graph:
             
             Video ID: {video_id}
@@ -263,7 +313,64 @@ class RDFYouTubeKnowledgeGraphExtractor:
             Current Knowledge Graph:
             {knowledge_graph}
             
-            Suggest improvements for entity resolution and ontology usage.""")
+            Return ONLY a valid JSON object with your critique.""")
+        ])
+    
+    def _create_refinement_prompt(self) -> ChatPromptTemplate:
+        """Create prompt for refining the knowledge graph based on critique"""
+        return ChatPromptTemplate.from_messages([
+            ("system", """You are an expert at refining RDF-based knowledge graphs based on critique.
+            
+            Given the original transcript, current knowledge graph, and critique, create an improved version.
+            
+            Guidelines:
+            1. Add missing entities mentioned in the critique
+            2. Add missing relationships
+            3. Fix incorrect entities/relationships
+            4. Apply entity resolution suggestions
+            5. Implement ontology improvements
+            
+            Return a complete knowledge graph with the EXACT same JSON structure:
+            {{
+                "entities": [...],
+                "relationships": [...],
+                "provenance": {{...}}
+            }}"""),
+            ("human", """Refine this knowledge graph based on the critique:
+            
+            Video ID: {video_id}
+            Transcript: {transcript}
+            
+            Current Knowledge Graph:
+            {knowledge_graph}
+            
+            Critique:
+            {critique}
+            
+            Return ONLY a valid JSON object with the refined knowledge graph.""")
+        ])
+    
+    def _create_refinement_prompt(self) -> ChatPromptTemplate:
+        """Create prompt for refining the knowledge graph based on critique"""
+        return ChatPromptTemplate.from_messages([
+            ("system", """You are an expert at refining RDF-based knowledge graphs.
+            
+            Given a knowledge graph and critique, create an improved version that addresses the issues.
+            Maintain the same JSON structure as the original.
+            
+            Return the complete refined knowledge graph with the EXACT same structure."""),
+            ("human", """Refine this knowledge graph based on the critique:
+            
+            Video ID: {video_id}
+            Transcript: {transcript}
+            
+            Current Knowledge Graph:
+            {knowledge_graph}
+            
+            Critique:
+            {critique}
+            
+            Return ONLY a valid JSON object with the refined knowledge graph.""")
         ])
     
     def generate_entity_embedding(self, entity: RDFEntity) -> List[float]:
@@ -280,34 +387,66 @@ class RDFYouTubeKnowledgeGraphExtractor:
         embedding = self.embeddings.embed_query(text)
         return embedding
     
-    async def extract_knowledge_graph(self, video_id: str, max_iterations: int = 3) -> RDFKnowledgeGraph:
+    async def extract_knowledge_graph(self, video_id: str, max_iterations: int = 3) -> Optional[RDFKnowledgeGraph]:
         """Extract RDF knowledge graph with iterative refinement"""
         segments = self.fetch_transcript(video_id)
+        
+        if not segments:
+            logger.warning(f"No transcript available for video {video_id}")
+            return None
         
         transcript_text = "\n".join([
             f"[{seg.start:.1f}s] {seg.text}"
             for seg in segments
         ])
         
+        logger.info(f"Transcript length: {len(transcript_text)} characters")
+        
         extraction_prompt = self._create_extraction_prompt()
         kg_parser = PydanticOutputParser(pydantic_object=RDFKnowledgeGraph)
         
         extraction_chain = extraction_prompt | self.extractor_llm
         
+        logger.info("Extracting initial knowledge graph...")
         result = extraction_chain.invoke({
             "video_id": video_id,
             "transcript": transcript_text
         })
         
-        current_kg = kg_parser.parse(result.content)
+        try:
+            # Try to parse the content
+            content = result.content
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0]
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0]
+            
+            # Parse and validate
+            parsed_json = json.loads(content)
+            current_kg = RDFKnowledgeGraph(**parsed_json)
+            
+        except Exception as e:
+            logger.error(f"Error parsing LLM output: {e}")
+            # Create a minimal valid knowledge graph to continue
+            current_kg = RDFKnowledgeGraph(
+                entities=[],
+                relationships=[],
+                provenance={}
+            )
         
         # Iterative refinement
         critique_prompt = self._create_critique_prompt()
+        refinement_prompt = self._create_refinement_prompt()
         critique_parser = PydanticOutputParser(pydantic_object=KnowledgeGraphCritique)
         
         for iteration in range(max_iterations):
-            print(f"Refinement iteration {iteration + 1}/{max_iterations}")
+            if not current_kg.entities:
+                logger.info(f"No entities found, skipping refinement")
+                break
+                
+            logger.info(f"Refinement iteration {iteration + 1}/{max_iterations}")
             
+            # Get critique
             critique_chain = critique_prompt | self.critic_llm
             critique_result = critique_chain.invoke({
                 "video_id": video_id,
@@ -315,16 +454,54 @@ class RDFYouTubeKnowledgeGraphExtractor:
                 "knowledge_graph": current_kg.json()
             })
             
-            critique = critique_parser.parse(critique_result.content)
-            
-            if not any([critique.missing_entities, critique.missing_relationships,
-                       critique.incorrect_entities, critique.incorrect_relationships,
-                       critique.entity_resolution_suggestions]):
-                print("No further improvements suggested")
+            try:
+                # Parse critique
+                critique_content = critique_result.content
+                if "```json" in critique_content:
+                    critique_content = critique_content.split("```json")[1].split("```")[0]
+                elif "```" in critique_content:
+                    critique_content = critique_content.split("```")[1].split("```")[0]
+                
+                critique_json = json.loads(critique_content)
+                critique = KnowledgeGraphCritique(**critique_json)
+                
+                logger.info(f"Critique summary:")
+                logger.info(f"  - Missing entities: {len(critique.missing_entities)}")
+                logger.info(f"  - Missing relationships: {len(critique.missing_relationships)}")
+                logger.info(f"  - Entity resolution suggestions: {len(critique.entity_resolution_suggestions)}")
+                
+                # Check if improvements are needed
+                if not any([critique.missing_entities, critique.missing_relationships,
+                           critique.incorrect_entities, critique.incorrect_relationships,
+                           critique.entity_resolution_suggestions, critique.ontology_improvements]):
+                    logger.info("No further improvements suggested")
+                    break
+                
+                # Apply refinements using the refinement prompt
+                logger.info("Applying refinements...")
+                refinement_chain = refinement_prompt | self.extractor_llm
+                refinement_result = refinement_chain.invoke({
+                    "video_id": video_id,
+                    "transcript": transcript_text,
+                    "knowledge_graph": current_kg.json(),
+                    "critique": critique.json()
+                })
+                
+                # Parse refined knowledge graph
+                refined_content = refinement_result.content
+                if "```json" in refined_content:
+                    refined_content = refined_content.split("```json")[1].split("```")[0]
+                elif "```" in refined_content:
+                    refined_content = refined_content.split("```")[1].split("```")[0]
+                
+                refined_json = json.loads(refined_content)
+                current_kg = RDFKnowledgeGraph(**refined_json)
+                
+                logger.info(f"After refinement: {len(current_kg.entities)} entities, {len(current_kg.relationships)} relationships")
+                
+            except Exception as e:
+                logger.error(f"Error in refinement iteration: {e}")
                 break
-            
-            # Apply refinements (similar to before but with RDF focus)
-            # ... refinement logic ...
         
         return current_kg
     
@@ -401,7 +578,6 @@ class RDFYouTubeKnowledgeGraphExtractor:
     def search_similar_entities_raw(self, embedding: List[float], limit: int = 10) -> List[Dict[str, Any]]:
         """Raw embedding search"""
         # This is a simplified version - in production, use MongoDB Atlas Vector Search
-        # For now, we'll do a basic implementation
         all_entities = list(self.entities_collection.find({}))
         
         similarities = []
@@ -547,54 +723,82 @@ async def main():
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
     MONGODB_URI = os.getenv("MONGODB_URI")
     
+    if not GOOGLE_API_KEY:
+        logger.error("Error: GOOGLE_API_KEY environment variable not set")
+        logger.info("Get your API key from: https://makersuite.google.com/app/apikey")
+        return
+    
+    if not MONGODB_URI:
+        logger.error("Error: MONGODB_URI environment variable not set")
+        logger.info("Get your MongoDB URI from: https://cloud.mongodb.com/")
+        return
+    
     # Initialize extractor
     extractor = RDFYouTubeKnowledgeGraphExtractor(
         google_api_key=GOOGLE_API_KEY,
         mongodb_uri=MONGODB_URI
     )
     
-    # Process multiple videos
-    video_ids = ["video_id_1", "video_id_2"]  # Replace with actual video IDs
+    # Example video IDs with known good transcripts
+    video_ids = [
+        "Cc0kQ58_QrI",
+    ]
+    
+    logger.info("Processing YouTube videos for knowledge graph extraction...")
     
     for video_id in video_ids:
         try:
-            print(f"\nExtracting knowledge graph from video: {video_id}")
-            kg = await extractor.extract_knowledge_graph(video_id, max_iterations=3)
+            logger.info(f"\nExtracting knowledge graph from video: {video_id}")
+            logger.info(f"Video URL: https://www.youtube.com/watch?v={video_id}")
             
-            print(f"Extracted {len(kg.entities)} entities and {len(kg.relationships)} relationships")
+            kg = await extractor.extract_knowledge_graph(video_id, max_iterations=2)
+            
+            if not kg:
+                logger.warning(f"Could not extract knowledge graph from video {video_id}")
+                continue
+            
+            logger.info(f"Extracted {len(kg.entities)} entities and {len(kg.relationships)} relationships")
+            
+            # Show some extracted entities
+            if kg.entities:
+                logger.info("\nSample entities extracted:")
+                for entity in kg.entities[:5]:
+                    logger.info(f"  - {entity.label} ({', '.join(entity.types)})")
+                    if entity.properties.get('description'):
+                        logger.info(f"    Description: {entity.properties['description'][:100]}...")
             
             # Store with entity resolution
-            print("Storing in MongoDB with entity resolution...")
-            extractor.store_knowledge_graph(video_id, kg)
+            if kg.entities or kg.relationships:
+                logger.info("\nStoring in MongoDB with entity resolution...")
+                extractor.store_knowledge_graph(video_id, kg)
+                
+                # Test GraphRAG search if we have entities
+                if kg.entities:
+                    logger.info("\nTesting GraphRAG with multi-hop context...")
+                    # Search based on first entity type
+                    search_query = kg.entities[0].types[0].split(':')[-1] if kg.entities[0].types else "technology"
+                    results = extractor.search_entities_with_context(search_query, max_hops=2, limit=3)
+                    
+                    for result in results[:1]:
+                        entity = result["entity"]
+                        logger.info(f"\nFound entity: {entity['label']}")
+                        logger.info(f"Connected to {len(result['connected_entities'])} entities within 2 hops")
             
         except Exception as e:
-            print(f"Error processing video {video_id}: {e}")
+            logger.error(f"Error processing video {video_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
     
-    # GraphRAG search with multi-hop context
-    print("\n\nTesting GraphRAG with multi-hop context...")
-    results = extractor.search_entities_with_context("ocean ecosystems", max_hops=2, limit=3)
-    
-    for result in results:
-        entity = result["entity"]
-        print(f"\n{'='*60}")
-        print(f"Entity: {entity['label']} ({', '.join(entity['types'])})")
-        print(f"Score: {result['score']:.3f}")
-        print(f"Connected to {len(result['connected_entities'])} entities within 2 hops")
-        
-        # Show some relationships
-        print("\nSample relationships:")
-        for rel in result["outgoing_relationships"][:3]:
-            print(f"  -> {rel['predicate']} -> {rel['object_uri']}")
-        
-        # Show provenance
-        print("\nProvenance:")
-        for prov in result["provenance"][:2]:
-            print(f"  Video: {prov['video_id']} at {prov['timestamp']:.1f}s")
-    
-    # Export to RDF
-    print("\n\nExporting to RDF/Turtle...")
-    rdf_output = extractor.export_to_rdf()
-    print(rdf_output[:500] + "...")  # Show first 500 chars
+    # Test RDF export
+    logger.info("\n\nExporting to RDF/Turtle...")
+    try:
+        rdf_output = extractor.export_to_rdf()
+        if rdf_output:
+            logger.info("RDF export successful!")
+            logger.info(f"First 500 characters:\n{rdf_output[:500]}...")
+    except Exception as e:
+        logger.error(f"Error exporting to RDF: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
