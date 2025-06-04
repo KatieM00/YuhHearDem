@@ -1,0 +1,7 @@
+youtube-transcript-api
+langchain
+langchain-google-genai
+pymongo
+rdflib
+numpy
+python-dotenv
