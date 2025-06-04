@@ -3,14 +3,14 @@ import json
 import asyncio
 import hashlib
 from typing import List, Dict, Any, Tuple, Optional, Set
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 import numpy as np
 from urllib.parse import quote
 import logging
 
-# YouTube transcript fetching
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+# Apify for YouTube transcript fetching
+from apify_client import ApifyClient
 
 # LangChain and Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -78,7 +78,7 @@ class KnowledgeGraphCritique(BaseModel):
     ontology_improvements: List[str]
 
 class RDFYouTubeKnowledgeGraphExtractor:
-    def __init__(self, google_api_key: str, mongodb_uri: str, db_name: str = "youtube_rdf_kg"):
+    def __init__(self, google_api_key: str, apify_api_key: str, mongodb_uri: str, db_name: str = "youtube_rdf_kg"):
         # Initialize LLMs
         self.extractor_llm = ChatGoogleGenerativeAI(
             model="gemini-2.0-flash",
@@ -97,6 +97,10 @@ class RDFYouTubeKnowledgeGraphExtractor:
             model="models/embedding-001",
             google_api_key=google_api_key
         )
+        
+        # Apify setup
+        self.apify_api_key = apify_api_key
+        self.apify_client = ApifyClient(self.apify_api_key)
         
         # MongoDB setup
         self.client = MongoClient(mongodb_uri)
@@ -194,34 +198,58 @@ class RDFYouTubeKnowledgeGraphExtractor:
         return entity.uri, False
     
     def fetch_transcript(self, video_id: str) -> Optional[List[TranscriptSegment]]:
-        """Fetch transcript from YouTube video with improved error handling"""
+        """Fetch transcript from YouTube video using Apify's YouTube Transcript Scraper"""
         try:
             logger.info(f"Fetching transcript for video: {video_id}")
             
-            # First, try to get the list of available transcripts
-            transcript_data = YouTubeTranscriptApi().fetch(video_id, languages=['en'])
-            logger.info(f"Fetched English transcript for {video_id}")
+            # Prepare input for the YouTube Transcript Scraper
+            actor_input = {
+                "videoUrl": f"https://www.youtube.com/watch?v={video_id}"
+            }
             
-            segments = [
-                TranscriptSegment(
-                    text=item.text,
-                    start=item.start,
-                    duration=item.duration
-                )
-                for item in transcript_data.snippets
-            ]
+            logger.info(f"Starting Apify actor run for video {video_id}")
+            
+            # Run the actor and wait for it to finish
+            run = self.apify_client.actor("pintostudio/youtube-transcript-scraper").call(run_input=actor_input)
+            
+            # Check if the run was successful
+            if not run or run.get('status') != 'SUCCEEDED':
+                logger.error(f"Apify actor run failed with status: {run.get('status') if run else 'None'}")
+                return None
+            
+            # Get the results from the dataset
+            dataset_client = self.apify_client.dataset(run["defaultDatasetId"])
+            items = list(dataset_client.iterate_items())
+            
+            if not items:
+                logger.error(f"No transcript data returned for video {video_id}")
+                return None
+            
+            # Process the transcript data - Apify returns format: {"data": [{"start": "...", "dur": "...", "text": "..."}]}
+            segments = []
+            for item in items:
+                if 'data' in item and isinstance(item['data'], list):
+                    for segment_data in item['data']:
+                        text = segment_data.get('text', '')
+                        start = float(segment_data.get('start', 0))
+                        duration = float(segment_data.get('dur', 0))
+                        
+                        if text.strip():  # Only add non-empty segments
+                            segments.append(TranscriptSegment(
+                                text=text.strip(),
+                                start=start,
+                                duration=duration
+                            ))
+            
+            if not segments:
+                logger.warning(f"No valid transcript segments found for video {video_id}")
+                return None
             
             logger.info(f"Successfully fetched {len(segments)} transcript segments")
             return segments
             
-        except TranscriptsDisabled:
-            logger.error(f"Transcripts are disabled for video {video_id}")
-            return None
-        except NoTranscriptFound:
-            logger.error(f"No transcript found for video {video_id}")
-            return None
         except Exception as e:
-            logger.error(f"Error fetching transcript for {video_id}: {e}")
+            logger.error(f"Error fetching transcript for {video_id} via Apify: {e}")
             return None
     
     def _create_extraction_prompt(self) -> ChatPromptTemplate:
@@ -350,29 +378,6 @@ class RDFYouTubeKnowledgeGraphExtractor:
             Return ONLY a valid JSON object with the refined knowledge graph.""")
         ])
     
-    def _create_refinement_prompt(self) -> ChatPromptTemplate:
-        """Create prompt for refining the knowledge graph based on critique"""
-        return ChatPromptTemplate.from_messages([
-            ("system", """You are an expert at refining RDF-based knowledge graphs.
-            
-            Given a knowledge graph and critique, create an improved version that addresses the issues.
-            Maintain the same JSON structure as the original.
-            
-            Return the complete refined knowledge graph with the EXACT same structure."""),
-            ("human", """Refine this knowledge graph based on the critique:
-            
-            Video ID: {video_id}
-            Transcript: {transcript}
-            
-            Current Knowledge Graph:
-            {knowledge_graph}
-            
-            Critique:
-            {critique}
-            
-            Return ONLY a valid JSON object with the refined knowledge graph.""")
-        ])
-    
     def generate_entity_embedding(self, entity: RDFEntity) -> List[float]:
         """Generate embedding for an RDF entity"""
         # Create rich text representation including types
@@ -451,7 +456,7 @@ class RDFYouTubeKnowledgeGraphExtractor:
             critique_result = critique_chain.invoke({
                 "video_id": video_id,
                 "transcript": transcript_text,
-                "knowledge_graph": current_kg.json()
+                "knowledge_graph": current_kg.model_dump_json()
             })
             
             try:
@@ -483,8 +488,8 @@ class RDFYouTubeKnowledgeGraphExtractor:
                 refinement_result = refinement_chain.invoke({
                     "video_id": video_id,
                     "transcript": transcript_text,
-                    "knowledge_graph": current_kg.json(),
-                    "critique": critique.json()
+                    "knowledge_graph": current_kg.model_dump_json(),
+                    "critique": critique.model_dump_json()
                 })
                 
                 # Parse refined knowledge graph
@@ -721,11 +726,17 @@ class RDFYouTubeKnowledgeGraphExtractor:
 async def main():
     # Set your API keys
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+    APIFY_API_KEY = os.getenv("APIFY_API_KEY")
     MONGODB_URI = os.getenv("MONGODB_URI")
     
     if not GOOGLE_API_KEY:
         logger.error("Error: GOOGLE_API_KEY environment variable not set")
         logger.info("Get your API key from: https://makersuite.google.com/app/apikey")
+        return
+    
+    if not APIFY_API_KEY:
+        logger.error("Error: APIFY_API_KEY environment variable not set")
+        logger.info("Get your API key from: https://console.apify.com/account/integrations")
         return
     
     if not MONGODB_URI:
@@ -736,12 +747,13 @@ async def main():
     # Initialize extractor
     extractor = RDFYouTubeKnowledgeGraphExtractor(
         google_api_key=GOOGLE_API_KEY,
+        apify_api_key=APIFY_API_KEY,
         mongodb_uri=MONGODB_URI
     )
     
     # Example video IDs with known good transcripts
     video_ids = [
-        "Cc0kQ58_QrI",
+        "dR-eoAEvPH4",
     ]
     
     logger.info("Processing YouTube videos for knowledge graph extraction...")
