@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import uvicorn
+from datetime import datetime
 
 app = FastAPI()
 
@@ -26,22 +27,33 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
+    used_knowledge_graph: bool
     sources: Optional[List[Source]] = None
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    # For now, return a mock response
-    return ChatResponse(
-        response="This is a mock response from the backend server.",
-        sources=[
-            Source(
-                date="Jan 15, 2025",
-                speaker="Parliamentary Session",
-                videoId="dQw4w9WgXcQ",
-                timestamp=930
-            )
-        ]
-    )
+    try:
+        # Mock response with realistic parliamentary data
+        response_text = "In the most recent parliamentary session, several key points were discussed regarding economic reforms. The Prime Minister emphasized digital transformation initiatives and support for small businesses through new tax incentives."
+        
+        return ChatResponse(
+            response=response_text,
+            used_knowledge_graph=True,
+            sources=[
+                Source(
+                    date=datetime.now().strftime("%b %d, %Y"),
+                    speaker="Parliamentary Economic Debate",
+                    videoId="DUkW_SbdQOw",
+                    timestamp=240
+                )
+            ]
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
