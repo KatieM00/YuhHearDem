@@ -1,6 +1,5 @@
 import React, { createContext, useState, useContext, ReactNode } from 'react';
-import axios from 'axios';
-import { Message, Video, ChatResponse } from '../types';
+import { Message, Video } from '../types';
 import { sampleMessages } from '../data/sampleData';
 
 interface AppContextType {
@@ -28,7 +27,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setMessages((prev) => [...prev, message]);
   };
 
-  const sendMessage = async () => {
+  const sendMessage = () => {
     if (input.trim() === '') return;
 
     // Add user message
@@ -41,22 +40,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setInput('');
     setIsTyping(true);
 
-    try {
-      // Call backend API
-      const response = await axios.post<ChatResponse>('/api/chat', {
-        question: input
-      });
-
-      const botMessage: Message = {
-        type: 'bot',
-        text: response.data.response,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        sources: response.data.sources
-      };
-
-      addMessage(botMessage);
-    } catch (error) {
-      // Fallback to sample data if API fails
+    // Simulate bot response after delay
+    setTimeout(() => {
+      // Find a mock response from sample data or generate a default one
       const mockResponse = sampleMessages.find(m => m.type === 'bot') || {
         type: 'bot',
         text: '🔍 I found some information about that topic in recent parliamentary sessions.',
@@ -72,12 +58,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       };
       
       addMessage(mockResponse as Message);
-    } finally {
       setIsTyping(false);
-    }
+    }, 2000);
   };
 
   const loadVideo = (videoId: string, startTime: number) => {
+    // Find source details from messages
     let videoTitle = "Parliamentary Session";
     let videoDate = "January 15, 2025";
     

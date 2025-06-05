@@ -18,9 +18,3 @@ export interface Video {
   date: string;
   startTime: number;
 }
-
-export interface ChatResponse {
-  response: string;
-  used_knowledge_graph: boolean;
-  sources?: Source[];
-}
