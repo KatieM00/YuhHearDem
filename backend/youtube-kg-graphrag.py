@@ -753,7 +753,7 @@ async def main():
     
     # Example video IDs with known good transcripts
     video_ids = [
-        "dR-eoAEvPH4",
+        "DUkW_SbdQOw&t=4s",
     ]
     
     logger.info("Processing YouTube videos for knowledge graph extraction...")
