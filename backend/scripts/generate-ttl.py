@@ -74,23 +74,73 @@ Convert the following excerpt from a **parliamentary transcript** into RDF tripl
    @prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
    @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
    @prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
-2. **Include concept resources** (`ex:Concept_*`) for any abstract idea,
-   policy, or theme so the public can query concepts directly.
-3. **All entities must be connected** by at least one explicit relationship –
-   no isolated nodes.
-4. **Capture provenance for EVERY asserted triple** using RDF reification. For
-   each triple `S P O`, create a new blank node (e.g. []) with:
+
+2. **Create clean, concise URIs** - use short, meaningful names for entities and predicates:
+   - Good: ex:Speaker, pol:discusses, pol:supports, pol:opposes, pol:appeals
+   - Bad: pol:appealsToEveryoneToSaySomethingIfTheyComeAcrossAbuse
+   - Use simple verbs like: discusses, mentions, supports, opposes, proposes, questions, appeals, states, argues
+
+3. **CRITICAL: Every custom entity AND predicate MUST have an rdfs:label**:
+   - For entities: ex:Speaker rdfs:label "Mr. Speaker" .
+   - For predicates: pol:appeals rdfs:label "appeals to everyone to say something if they come across abuse" .
+   - For concepts: ex:AbuseReporting rdfs:label "Abuse Reporting" .
+   - NO entity or predicate should exist without a human-readable label
+
+4. **Example of proper predicate labeling**:
+   ```turtle
+   # Define the predicate with its label
+   pol:appeals rdfs:label "appeals to everyone to say something if they come across abuse" .
+   
+   # Use the predicate in statements
+   ex:MemberForStPeter pol:appeals ex:AbuseReporting .
+   
+   # Reify with provenance
+   [] rdf:type rdf:Statement ;
+      rdf:subject ex:MemberForStPeter ;
+      rdf:predicate pol:appeals ;
+      rdf:object ex:AbuseReporting ;
+      ex:source ex:{video_id} ;
+      ex:offset "2382"^^xsd:decimal .
+   ```
+
+5. **Include concept resources** (`ex:Concept_*`) for any abstract idea, policy, or theme so the public can query concepts directly.
+
+6. **All entities must be connected** by at least one explicit relationship – no isolated nodes.
+
+7. **Capture provenance for EVERY asserted triple** using RDF reification. For each triple `S P O`, create a new blank node (e.g. []) with:
        rdf:type      rdf:Statement ;
        rdf:subject   S ;
        rdf:predicate P ;
        rdf:object    O ;
        ex:source     ex:{video_id} ;
        ex:offset     "{{offset}}"^^xsd:decimal ;   # seconds from video start
-5. Use **FOAF** for people (`foaf:Person`, `foaf:name`) and **OWL** if you need
-   to declare new classes.
-6. Replace pronouns with canonical URIs or literals.
-7. Output **only valid Turtle** – no commentary, no Markdown.
-8. Input consists of lines with an integer as the seconds offset from the start of the video file and then a sentence or two.
+
+8. Use **FOAF** for people (`foaf:Person`, `foaf:name`) and **OWL** if you need to declare new classes.
+
+9. Replace pronouns with canonical URIs or literals.
+
+10. Output **only valid Turtle** – no commentary, no Markdown.
+
+11. Input consists of lines with an integer as the seconds offset from the start of the video file and then a sentence or two.
+
+**Template structure:**
+```turtle
+# First: Define all entities and predicates with labels
+ex:EntityName rdfs:label "Human Readable Name" .
+pol:predicateName rdfs:label "human readable description of action" .
+
+# Then: Use them in statements
+ex:Subject pol:predicate ex:Object .
+
+# Finally: Add reification for provenance
+[] rdf:type rdf:Statement ;
+   rdf:subject ex:Subject ;
+   rdf:predicate pol:predicate ;
+   rdf:object ex:Object ;
+   ex:source ex:{video_id} ;
+   ex:offset "123"^^xsd:decimal .
+```
+
 video_id: {video_id}
 
 Convert the following transcript:"""
@@ -99,14 +149,28 @@ Convert the following transcript:"""
         """Return the system prompt for RDF correction."""
         return """You are an expert Semantic Web engineer. The following RDF Turtle content has syntax errors that prevent it from being parsed by rdflib.
 
+You have access to:
+1. The original transcript that was being converted
+2. The RDF content with syntax errors
+3. The specific error message from the parser
+
 Please fix ONLY the syntax errors while preserving all the semantic content and structure. Do not add, remove, or modify any triples - only fix syntax issues like:
 - Missing periods at end of statements
 - Incorrect punctuation
 - Malformed URIs
 - Invalid literal syntax
 - Missing prefixes
+- Incorrect use of blank nodes
+- Quote escaping issues
+- Namespace declaration problems
 
-Return ONLY the corrected Turtle syntax with no additional commentary."""
+Use the original transcript as context to ensure that:
+- Entity names and labels accurately reflect the content
+- Relationships make sense in context
+- URIs are properly formed and consistent
+- All semantic meaning is preserved
+
+Return ONLY the corrected Turtle syntax with no additional commentary or explanations."""
 
     def load_transcript(self, file_path: str) -> str:
         """
@@ -127,6 +191,44 @@ Return ONLY the corrected Turtle syntax with no additional commentary."""
         except Exception as e:
             raise Exception(f"Error loading transcript: {str(e)}")
 
+    def clean_turtle_output(self, rdf_content: str) -> str:
+        """
+        Clean Turtle output by removing markdown code fences and extra formatting.
+        
+        Args:
+            rdf_content: Raw RDF content that might contain code fences
+            
+        Returns:
+            Clean Turtle content
+        """
+        # Remove markdown code fences
+        lines = rdf_content.split('\n')
+        cleaned_lines = []
+        in_code_block = False
+        
+        for line in lines:
+            stripped = line.strip()
+            
+            # Check for code fence start/end
+            if stripped.startswith('```'):
+                if not in_code_block:
+                    in_code_block = True
+                else:
+                    in_code_block = False
+                continue
+            
+            # If we're in a code block or not in any block, include the line
+            if in_code_block or not any(stripped.startswith(fence) for fence in ['```']):
+                cleaned_lines.append(line)
+        
+        # Join back and strip extra whitespace
+        cleaned = '\n'.join(cleaned_lines).strip()
+        
+        # Remove any remaining markdown artifacts
+        cleaned = cleaned.replace('```turtle', '').replace('```ttl', '').replace('```', '')
+        
+        return cleaned.strip()
+
     def convert_to_rdf(self, transcript: str, video_id: str) -> str:
         """
         Convert transcript to RDF Turtle format.
@@ -146,22 +248,42 @@ Return ONLY the corrected Turtle syntax with no additional commentary."""
         
         try:
             response = self.llm.invoke(messages)
-            return response.content.strip()
+            raw_content = response.content.strip()
+            
+            # Clean any markdown formatting
+            cleaned_content = self.clean_turtle_output(raw_content)
+            
+            return cleaned_content
         except Exception as e:
             raise Exception(f"Error converting to RDF: {str(e)}")
 
-    def correct_rdf(self, rdf_content: str, error_message: str) -> str:
+    def correct_rdf(self, rdf_content: str, error_message: str, original_transcript: str) -> str:
         """
-        Correct RDF syntax errors.
+        Correct RDF syntax errors using original transcript as context.
         
         Args:
             rdf_content: RDF Turtle content with errors
             error_message: Error message from rdflib
+            original_transcript: Original transcript for context
             
         Returns:
             Corrected RDF Turtle content
         """
-        correction_message = f"{self.correction_prompt}\n\nError message:\n{error_message}\n\nRDF content to fix:\n{rdf_content}"
+        # Truncate transcript if it's very long to avoid token limits
+        transcript_excerpt = original_transcript
+        if len(original_transcript) > 2000:
+            transcript_excerpt = original_transcript[:2000] + "\n... (transcript truncated for context)"
+        
+        correction_message = f"""{self.correction_prompt}
+
+ORIGINAL TRANSCRIPT (for context):
+{transcript_excerpt}
+
+PARSER ERROR MESSAGE:
+{error_message}
+
+RDF CONTENT TO FIX:
+{rdf_content}"""
         
         messages = [
             HumanMessage(content=correction_message)
@@ -169,7 +291,12 @@ Return ONLY the corrected Turtle syntax with no additional commentary."""
         
         try:
             response = self.llm.invoke(messages)
-            return response.content.strip()
+            corrected_content = response.content.strip()
+            
+            # Clean any markdown formatting that might have been added
+            corrected_content = self.clean_turtle_output(corrected_content)
+            
+            return corrected_content
         except Exception as e:
             raise Exception(f"Error correcting RDF: {str(e)}")
 
@@ -223,15 +350,18 @@ Return ONLY the corrected Turtle syntax with no additional commentary."""
             correction_attempts += 1
             print(f"RDF validation failed (attempt {correction_attempts}/{max_attempts})")
             print(f"Error: {error_message}")
-            print("Attempting to correct syntax errors...")
+            print("Attempting to correct syntax errors with original transcript context...")
             
             try:
-                rdf_content = self.correct_rdf(rdf_content, error_message)
+                # Pass the original transcript as context for correction
+                rdf_content = self.correct_rdf(rdf_content, error_message, transcript)
                 is_valid, error_message = self.validate_rdf(rdf_content)
                 
                 if is_valid:
                     print(f"RDF syntax corrected successfully after {correction_attempts} attempt(s)")
                     break
+                else:
+                    print(f"Correction attempt {correction_attempts} still has errors: {error_message}")
                     
             except Exception as e:
                 print(f"Error during correction attempt {correction_attempts}: {e}")
