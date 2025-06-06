@@ -232,12 +232,18 @@ class GraphQuerier:
         # Create new RDF graph
         graph = Graph()
         
-        # Bind prefixes
-        EX = Namespace("http://example.org/")
-        POL = Namespace("http://example.org/politics#")
+        # Bind prefixes for the Barbados Parliament ontology
+        BBP = Namespace("http://example.com/barbados-parliament-ontology#")
+        SESS = Namespace("http://example.com/barbados-parliament-session/")
+        SCHEMA = Namespace("http://schema.org/")
+        ORG = Namespace("http://www.w3.org/ns/org#")
+        PROV = Namespace("http://www.w3.org/ns/prov#")
         
-        graph.bind("ex", EX)
-        graph.bind("pol", POL)
+        graph.bind("bbp", BBP)
+        graph.bind("sess", SESS)
+        graph.bind("schema", SCHEMA)
+        graph.bind("org", ORG)
+        graph.bind("prov", PROV)
         graph.bind("foaf", FOAF)
         graph.bind("owl", OWL)
         graph.bind("rdf", RDF)
@@ -261,8 +267,15 @@ class GraphQuerier:
                         int(value_str)
                         return Literal(value_str, datatype=XSD.integer)
                 except ValueError:
-                    # It's a string literal
-                    return Literal(value_str)
+                    # Check if it's a year (4 digits)
+                    if re.match(r'^\d{4}$', value_str):
+                        return Literal(value_str, datatype=XSD.gYear)
+                    # Check if it's a date
+                    elif re.match(r'^\d{4}-\d{2}-\d{2}$', value_str):
+                        return Literal(value_str, datatype=XSD.date)
+                    else:
+                        # It's a string literal
+                        return Literal(value_str)
         
         # Add node type declarations and properties
         for node in subgraph["nodes"]:
@@ -298,7 +311,7 @@ class GraphQuerier:
             obj = string_to_rdf_term(edge["object"])
             graph.add((subject, predicate, obj))
         
-        # Add reified statements (provenance)
+        # Add reified statements with enhanced provenance
         for stmt in subgraph["statements"]:
             if "statement_uri" in stmt and stmt["statement_uri"].startswith("_:"):
                 # Use the original blank node ID
@@ -313,12 +326,26 @@ class GraphQuerier:
             graph.add((stmt_node, RDF.predicate, URIRef(stmt["predicate"])))
             graph.add((stmt_node, RDF.object, string_to_rdf_term(stmt["object"])))
             
-            # Add provenance
-            if stmt.get("source"):
-                graph.add((stmt_node, EX.source, URIRef(stmt["source"])))
-            
-            if stmt.get("offset") is not None:
-                graph.add((stmt_node, EX.offset, Literal(stmt["offset"], datatype=XSD.decimal)))
+            # Add enhanced provenance using prov:wasDerivedFrom structure
+            if any(key in stmt for key in ["from_video", "start_offset", "end_offset"]):
+                # Create a blank node for the transcript segment
+                segment_node = BNode(f"segment_{stmt['statement_id'][:8]}")
+                
+                # Link statement to segment
+                graph.add((stmt_node, PROV.wasDerivedFrom, segment_node))
+                
+                # Add segment type
+                graph.add((segment_node, RDF.type, BBP.TranscriptSegment))
+                
+                # Add segment properties
+                if stmt.get("from_video"):
+                    graph.add((segment_node, BBP.fromVideo, URIRef(stmt["from_video"])))
+                
+                if stmt.get("start_offset") is not None:
+                    graph.add((segment_node, BBP.startTimeOffset, Literal(stmt["start_offset"], datatype=XSD.decimal)))
+                
+                if stmt.get("end_offset") is not None:
+                    graph.add((segment_node, BBP.endTimeOffset, Literal(stmt["end_offset"], datatype=XSD.decimal)))
         
         return graph
 
@@ -335,9 +362,14 @@ class GraphQuerier:
         # Convert to RDF graph first
         rdf_graph = self.subgraph_to_rdf_graph(subgraph)
         
+        # Count statements with provenance
+        statements_with_provenance = sum(1 for stmt in subgraph['statements'] 
+                                       if any(key in stmt for key in ["start_offset", "end_offset"]))
+        
         # Add comment header
         header_comment = f"""# Query results generated at {datetime.now(timezone.utc).isoformat()}Z
 # Nodes: {len(subgraph['nodes'])}, Edges: {len(subgraph['edges'])}, Statements: {len(subgraph['statements'])}
+# Statements with provenance: {statements_with_provenance}
 # Total triples: {len(rdf_graph)}
 
 """
@@ -356,6 +388,28 @@ class GraphQuerier:
             "statements": self.statements.count_documents({}),
             "videos": self.videos.count_documents({})
         }
+    
+    def get_provenance_stats(self) -> Dict[str, Any]:
+        """Get statistics about provenance data."""
+        total_statements = self.statements.count_documents({})
+        statements_with_offsets = self.statements.count_documents({
+            "$and": [
+                {"start_offset": {"$ne": None}},
+                {"end_offset": {"$ne": None}}
+            ]
+        })
+        
+        # Sample a few statements with provenance
+        sample_statements = list(self.statements.find({
+            "start_offset": {"$ne": None}
+        }).limit(3))
+        
+        return {
+            "total_statements": total_statements,
+            "statements_with_offsets": statements_with_offsets,
+            "coverage_percentage": (statements_with_offsets / total_statements * 100) if total_statements > 0 else 0,
+            "sample_statements": sample_statements
+        }
 
 def main():
     """Main function with argument parsing."""
@@ -364,6 +418,7 @@ def main():
     parser.add_argument("--hops", type=int, default=2, help="Number of traversal hops (default: 2)")
     parser.add_argument("--output", "-o", help="Output file (default: stdout)")
     parser.add_argument("--stats", action="store_true", help="Show database statistics")
+    parser.add_argument("--provenance", action="store_true", help="Show provenance statistics")
     
     args = parser.parse_args()
     
@@ -376,6 +431,21 @@ def main():
             print("📊 Database Statistics:")
             for collection, count in stats.items():
                 print(f"  {collection}: {count:,}")
+            print()
+        
+        if args.provenance:
+            prov_stats = querier.get_provenance_stats()
+            print("🔍 Provenance Statistics:")
+            print(f"  Total statements: {prov_stats['total_statements']:,}")
+            print(f"  Statements with time offsets: {prov_stats['statements_with_offsets']:,}")
+            print(f"  Coverage: {prov_stats['coverage_percentage']:.1f}%")
+            
+            if prov_stats['sample_statements']:
+                print("\n  Sample statements with provenance:")
+                for i, stmt in enumerate(prov_stats['sample_statements'], 1):
+                    print(f"    {i}. {stmt.get('subject', 'N/A')} -> {stmt.get('predicate', 'N/A')}")
+                    print(f"       Time: {stmt.get('start_offset', 'N/A')}s - {stmt.get('end_offset', 'N/A')}s")
+                    print(f"       Video: {stmt.get('source_video', 'N/A')}")
             print()
         
         # Perform query
@@ -397,12 +467,16 @@ def main():
             print(turtle_output)
         
         # Summary
+        statements_with_prov = sum(1 for stmt in subgraph['statements'] 
+                                 if any(key in stmt for key in ["start_offset", "end_offset"]))
+        
         print(f"\n📋 Query Summary:")
         print(f"  Query: '{args.query}'")
         print(f"  Hops: {args.hops}")
         print(f"  Nodes: {len(subgraph['nodes'])}")
         print(f"  Edges: {len(subgraph['edges'])}")
         print(f"  Statements: {len(subgraph['statements'])}")
+        print(f"  Statements with provenance: {statements_with_prov}")
         
     except ValueError as e:
         print(f"Configuration error: {e}")

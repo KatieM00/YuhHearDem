@@ -145,7 +145,11 @@ class RDFToMongoLoader:
         except:
             pass
         try:
-            self.statements.create_index([("offset", ASCENDING)])
+            self.statements.create_index([("start_offset", ASCENDING)])
+        except:
+            pass
+        try:
+            self.statements.create_index([("end_offset", ASCENDING)])
         except:
             pass
         
@@ -194,7 +198,7 @@ class RDFToMongoLoader:
             if 'Person' in uri_str or 'foaf' in uri_str:
                 types.append(str(FOAF.Person))
             elif 'Concept' in uri_str:
-                types.append("http://example.org/politics#Concept")
+                types.append("http://example.com/barbados-parliament-ontology#Concept")
             elif 'Statement' in uri_str:
                 types.append(str(RDF.Statement))
             else:
@@ -206,7 +210,7 @@ class RDFToMongoLoader:
         """Extract all properties for a given URI."""
         properties = {}
         
-        # Debug: show all triples for this URI
+        # Get all triples for this URI
         all_triples = list(graph.triples((uri, None, None)))
         
         for triple in all_triples:
@@ -286,23 +290,6 @@ class RDFToMongoLoader:
             node_types = self.determine_node_type(entity, graph)
             properties = self.extract_properties(entity, graph)
             
-            # Debug: Show properties for first few nodes
-            if nodes_added + nodes_updated < 5:
-                print(f"   Debug node {uri_str}:")
-                print(f"     All triples for this entity:")
-                for triple in graph.triples((entity, None, None)):
-                    print(f"       {triple[1]} -> {triple[2]}")
-                print(f"     Extracted properties: {properties}")
-                print(f"     rdfs:label key: '{str(RDFS.label)}'")
-                print(f"     foaf:name key: '{str(FOAF.name)}'")
-                print(f"     Has rdfs:label: {str(RDFS.label) in properties}")
-                print(f"     Has foaf:name: {str(FOAF.name) in properties}")
-                if str(RDFS.label) in properties:
-                    print(f"     rdfs:label value: '{properties[str(RDFS.label)]}'")
-                if str(FOAF.name) in properties:
-                    print(f"     foaf:name value: '{properties[str(FOAF.name)]}'")
-                print()
-            
             node_doc = {
                 "uri": uri_str,
                 "local_name": self.extract_local_name(uri_str),
@@ -315,18 +302,15 @@ class RDFToMongoLoader:
             
             # Extract label for better searchability
             label = None
+            schema_name_uri = "http://schema.org/name"
             if str(RDFS.label) in properties:
                 label = properties[str(RDFS.label)]
-                if nodes_added + nodes_updated < 5:
-                    print(f"     Using rdfs:label: '{label}'")
             elif str(FOAF.name) in properties:
                 label = properties[str(FOAF.name)]
-                if nodes_added + nodes_updated < 5:
-                    print(f"     Using foaf:name: '{label}'")
+            elif schema_name_uri in properties:
+                label = properties[schema_name_uri]
             else:
                 label = self.extract_local_name(uri_str)
-                if nodes_added + nodes_updated < 5:
-                    print(f"     Using local name: '{label}' (fallback)")
             
             node_doc["label"] = label
             
@@ -406,55 +390,52 @@ class RDFToMongoLoader:
         # Use video_id + blank node ID to ensure global uniqueness
         return f"{video_id}_{str(blank_node)}"
     
+    def extract_provenance_from_blank_node(self, blank_node: BNode, graph: Graph) -> Dict[str, Any]:
+        """Extract provenance information from a prov:wasDerivedFrom blank node."""
+        provenance = {}
+        
+        # Get all properties of the blank node
+        for pred, obj in graph.predicate_objects(blank_node):
+            pred_str = str(pred)
+            obj_str = str(obj)
+            
+            # Look for transcript segment properties
+            if pred_str == "http://example.com/barbados-parliament-ontology#fromVideo":
+                provenance["from_video"] = obj_str
+            elif pred_str == "http://example.com/barbados-parliament-ontology#startTimeOffset":
+                try:
+                    provenance["start_offset"] = float(obj_str)
+                except (ValueError, TypeError):
+                    provenance["start_offset"] = obj_str
+            elif pred_str == "http://example.com/barbados-parliament-ontology#endTimeOffset":
+                try:
+                    provenance["end_offset"] = float(obj_str)
+                except (ValueError, TypeError):
+                    provenance["end_offset"] = obj_str
+            elif pred_str == str(RDF.type):
+                provenance["segment_type"] = obj_str
+        
+        return provenance
+    
     def process_reified_statements(self, graph: Graph, video_id: str):
         """Extract and save reified statements (provenance information)."""
         print("Processing reified statements...")
         
         statements_added = 0
         
-        # Debug: Show what statement-related triples exist
-        print("🔍 Debugging reified statements...")
+        # Find all statements that use prov:wasDerivedFrom
+        prov_derived_from_uri = URIRef("http://www.w3.org/ns/prov#wasDerivedFrom")
         
-        # Look for any rdf:Statement types (including blank nodes)
+        # Find all statement nodes (these are blank nodes with rdf:type rdf:Statement)
         statement_nodes = list(graph.subjects(RDF.type, RDF.Statement))
         print(f"   Found {len(statement_nodes)} rdf:Statement nodes")
         
-        # Look for any reification predicates
-        reif_subjects = list(graph.subjects(RDF.subject, None))
-        reif_predicates = list(graph.subjects(RDF.predicate, None))
-        reif_objects = list(graph.subjects(RDF.object, None))
-        
-        print(f"   Found {len(reif_subjects)} rdf:subject triples")
-        print(f"   Found {len(reif_predicates)} rdf:predicate triples")
-        print(f"   Found {len(reif_objects)} rdf:object triples")
-        
-        # Look for ex:source and ex:offset patterns
-        source_triples = list(graph.subjects(URIRef("http://example.org/source"), None))
-        offset_triples = list(graph.subjects(URIRef("http://example.org/offset"), None))
-        
-        print(f"   Found {len(source_triples)} ex:source triples")
-        print(f"   Found {len(offset_triples)} ex:offset triples")
-        
-        # Show a few examples of what we found
-        if statement_nodes:
-            print(f"   Example statement node: {statement_nodes[0]}")
-            print(f"   Node type: {type(statement_nodes[0])}")
-            print(f"   Is blank node: {isinstance(statement_nodes[0], BNode)}")
-            
-            # Show properties of first statement node
-            example_node = statement_nodes[0]
-            print(f"   Properties of example node:")
-            for pred, obj in graph.predicate_objects(example_node):
-                print(f"     {pred} -> {obj}")
-        
-        # Find all reified statements (including blank nodes)
         for stmt_node in statement_nodes:
             # Extract the reified statement components
             subject = None
             predicate = None
             object_val = None
-            source = None
-            offset = None
+            provenance = {}
             
             for prop, value in graph.predicate_objects(stmt_node):
                 prop_str = str(prop)
@@ -464,24 +445,16 @@ class RDFToMongoLoader:
                     predicate = self.uri_to_string(value)
                 elif prop_str == str(RDF.object):
                     object_val = self.uri_to_string(value)
-                elif prop_str == "http://example.org/source":
-                    source = self.uri_to_string(value)
-                elif prop_str == "http://example.org/offset":
-                    try:
-                        offset = float(str(value)) if value else None
-                    except (ValueError, TypeError):
-                        offset = None
-            
-            print(f"   Processing statement: s={subject}, p={predicate}, o={object_val}")
+                elif prop_str == str(prov_derived_from_uri):
+                    # Extract provenance from the referenced blank node
+                    if isinstance(value, BNode):
+                        provenance = self.extract_provenance_from_blank_node(value, graph)
             
             if subject and predicate and object_val:
                 statement_id = self.create_statement_id(subject, predicate, object_val)
                 
                 # Create globally unique statement URI
-                if isinstance(stmt_node, BNode):
-                    global_stmt_uri = f"_:{self.create_global_blank_node_id(stmt_node, video_id)}"
-                else:
-                    global_stmt_uri = self.uri_to_string(stmt_node)
+                global_stmt_uri = f"_:{self.create_global_blank_node_id(stmt_node, video_id)}"
                 
                 statement_doc = {
                     "statement_id": statement_id,
@@ -490,20 +463,24 @@ class RDFToMongoLoader:
                     "subject": subject,
                     "predicate": predicate,
                     "object": object_val,
-                    "source": source,
                     "source_video": video_id,
-                    "offset": offset,
                     "created_at": datetime.now(timezone.utc)
                 }
+                
+                # Add provenance information
+                if provenance:
+                    statement_doc.update({
+                        "from_video": provenance.get("from_video"),
+                        "start_offset": provenance.get("start_offset"),
+                        "end_offset": provenance.get("end_offset"),
+                        "segment_type": provenance.get("segment_type")
+                    })
                 
                 try:
                     self.statements.insert_one(statement_doc)
                     statements_added += 1
-                    print(f"   ✅ Added statement: {statement_doc['global_statement_id']}")
                 except DuplicateKeyError:
-                    print(f"   ⚠️ Duplicate statement: {statement_doc['global_statement_id']}")
-            else:
-                print(f"   ❌ Incomplete statement: missing s/p/o")
+                    pass  # Skip duplicates
         
         print(f"✅ Processed reified statements: {statements_added} added")
     
@@ -564,7 +541,7 @@ def main():
     if len(sys.argv) != 2:
         print("Usage: python rdf_to_mongodb.py <rdf_file.ttl>")
         print("\nExample:")
-        print("python rdf_to_mongodb.py transcript-dR-eoAEvPH4.ttl")
+        print("python rdf_to_mongodb.py dR-eoAEvPH4.ttl")
         sys.exit(1)
     
     ttl_file = sys.argv[1]

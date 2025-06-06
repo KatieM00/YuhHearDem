@@ -37,7 +37,7 @@ load_dotenv()
 class RDFConverter:
     def __init__(self, api_key: str = None):
         """
-        Initialize the RDF converter with Gemini model.
+        Initialize the RDF converter with Gemini models.
         
         Args:
             api_key: Google API key. If None, will try to get from environment.
@@ -51,7 +51,16 @@ class RDFConverter:
                 "or pass api_key parameter."
             )
         
-        self.llm = ChatGoogleGenerativeAI(
+        # Primary LLM for initial conversion (temperature 0.0 for consistency)
+        self.llm_convert = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash-preview-05-20",
+            google_api_key=api_key,
+            temperature=0.0,
+            thinking_budget=0  # Disable thinking mode
+        )
+        
+        # Secondary LLM for error correction (temperature 1.0 for creativity in fixing)
+        self.llm_correct = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash-preview-05-20",
             google_api_key=api_key,
             temperature=1.0,
@@ -63,83 +72,143 @@ class RDFConverter:
     
     def _get_conversion_prompt(self, video_id: str) -> str:
         """Return the system prompt for transcript to RDF conversion."""
-        return f"""You are an expert Semantic Web engineer.
-Convert the following excerpt from a **parliamentary transcript** into RDF triples **in Turtle syntax**.
-★ Mandatory guidelines
-1. Use these prefixes exactly:
-   @prefix ex:    <http://example.org/> .
-   @prefix pol:   <http://example.org/politics#> .
-   @prefix foaf:  <http://xmlns.com/foaf/0.1/> .
-   @prefix owl:   <http://www.w3.org/2002/07/owl#> .
-   @prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-   @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
-   @prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+        return f"""Your task is to convert the provided parliamentary session transcript into a comprehensive RDF knowledge graph in Turtle (.ttl) format. The graph should capture speakers, their roles, constituencies, political affiliations, stances on the debated Bill, key arguments, mentioned organizations, legislation, events, and other relevant entities and their relationships. Crucially, each generated RDF claim must include provenance linking it to the specific time segment in the video that corresponds to the supporting text in the transcript.
 
-2. **Create clean, concise URIs** - use short, meaningful names for entities and predicates:
-   - Good: ex:Speaker, pol:discusses, pol:supports, pol:opposes, pol:appeals
-   - Bad: pol:appealsToEveryoneToSaySomethingIfTheyComeAcrossAbuse
-   - Use simple verbs like: discusses, mentions, supports, opposes, proposes, questions, appeals, states, argues
+**Source Video ID:** `{video_id}` (YouTube video)
 
-3. **CRITICAL: Every custom entity AND predicate MUST have an rdfs:label**:
-   - For entities: ex:Speaker rdfs:label "Mr. Speaker" .
-   - For predicates: pol:appeals rdfs:label "appeals to everyone to say something if they come across abuse" .
-   - For concepts: ex:AbuseReporting rdfs:label "Abuse Reporting" .
-   - NO entity or predicate should exist without a human-readable label
+**Input Transcript Format:**
+Each line of the transcript begins with a numerical time offset in seconds from the start of the video, followed by the spoken text.
+Example:
+`54 This is [unknown] H, Member for St. Peter.`
+`61 Thank you very much, Mr. Speaker.`
+`62 I rise to join this debate to continue the serious, mature approach that was taken by he who led in this debate, the Honourable Member for St. Michael South.`
 
-4. **Example of proper predicate labeling**:
-   ```turtle
-   # Define the predicate with its label
-   pol:appeals rdfs:label "appeals to everyone to say something if they come across abuse" .
-   
-   # Use the predicate in statements
-   ex:MemberForStPeter pol:appeals ex:AbuseReporting .
-   
-   # Reify with provenance
-   [] rdf:type rdf:Statement ;
-      rdf:subject ex:MemberForStPeter ;
-      rdf:predicate pol:appeals ;
-      rdf:object ex:AbuseReporting ;
-      ex:source ex:{video_id} ;
-      ex:offset "2382"^^xsd:decimal .
-   ```
+**General Instructions:**
 
-5. **Include concept resources** (`ex:Concept_*`) for any abstract idea, policy, or theme so the public can query concepts directly.
+1.  **Output Format:** Generate a single RDF graph in Turtle (.ttl) syntax.
+2.  **Prefixes:** Begin the output with the following RDF prefixes:
+    ```turtle
+    @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+    @prefix schema: <http://schema.org/> .
+    @prefix org: <http://www.w3.org/ns/org#> .
+    @prefix bbp: <http://example.com/barbados-parliament-ontology#> .
+    @prefix sess: <http://example.com/barbados-parliament-session/> .
+    @prefix prov: <http://www.w3.org/ns/prov#> .
+    ```
+3.  **Main Entity (`bbp:VideoRecording`):** All data generated from this transcript should ultimately be linked to a single `bbp:VideoRecording` instance. Use the URI `sess:video_{video_id}` for this video. The `bbp:hasVideoId` should reference the YouTube video ID.
+    ```turtle
+    sess:video_{video_id} a bbp:VideoRecording ;
+        schema:identifier "{video_id}" ;
+        bbp:hasVideoId "{video_id}" .
+    ```
+4.  **Parliamentary Session (`bbp:ParliamentarySession`):** Create an instance for the parliamentary session itself, linking it to the video and the main Bill being debated.
+    ```turtle
+    sess:{video_id}_session a bbp:ParliamentarySession ;
+        schema:name "Barbados Parliament Session - Video {video_id}" ;
+        bbp:recordedIn sess:video_{video_id} ;
+        bbp:debatesBill bbp:Bill_ChildProtectionBill .
+    ```
+5.  **Provenance (Time Offset for each claim):**
+    For *each generated RDF triple* (e.g., `subject predicate object .`), you *must* also generate an `rdf:Statement` instance (as a blank node) that represents that triple. This `rdf:Statement` blank node *must* include the following properties:
+    *   `rdf:type rdf:Statement`
+    *   `rdf:subject` (pointing to the subject of the original triple)
+    *   `rdf:predicate` (pointing to the predicate of the original triple)
+    *   `rdf:object` (pointing to the object of the original triple)
+    *   `prov:wasDerivedFrom` (pointing to a nested blank node representing the transcript segment).
 
-6. **All entities must be connected** by at least one explicit relationship – no isolated nodes.
+    The nested blank node representing the transcript segment *must* have:
+    *   `a bbp:TranscriptSegment`
+    *   `bbp:fromVideo` (pointing to `sess:video_{video_id}`)
+    *   `bbp:startTimeOffset` (the exact start time offset in seconds from the beginning of the *supporting line(s)* from the transcript, as `xsd:decimal`).
+    *   `bbp:endTimeOffset` (the inferred end time offset in seconds for the supporting text. This should be the `startTimeOffset` of the *next* relevant line in the transcript, or a reasonable estimate if it's the very last statement extracted from the transcript. For statements spanning multiple lines, the `endTimeOffset` should be based on the start time of the line *following* the last supporting line.)
 
-7. **Capture provenance for EVERY asserted triple** using RDF reification. For each triple `S P O`, create a new blank node (e.g. []) with:
-       rdf:type      rdf:Statement ;
-       rdf:subject   S ;
-       rdf:predicate P ;
-       rdf:object    O ;
-       ex:source     ex:{video_id} ;
-       ex:offset     "{{offset}}"^^xsd:decimal ;   # seconds from video start
+    **Example of Provenance Structure:**
+    ```turtle
+    bbp:Parliamentarian_UnknownH bbp:hasRole "Member for St. Peter" .
+    _:stmt_UnknownH_Role_{video_id}_54 rdf:type rdf:Statement ;
+        rdf:subject bbp:Parliamentarian_UnknownH ;
+        rdf:predicate bbp:hasRole ;
+        rdf:object "Member for St. Peter" ;
+        prov:wasDerivedFrom [
+            a bbp:TranscriptSegment ;
+            bbp:fromVideo sess:video_{video_id} ;
+            bbp:startTimeOffset "54.0"^^xsd:decimal ;
+            bbp:endTimeOffset "61.0"^^xsd:decimal # Inferred from the start time of the next line (61)
+        ] .
 
-8. Use **FOAF** for people (`foaf:Person`, `foaf:name`) and **OWL** if you need to declare new classes.
+    bbp:Bill_ChildProtectionBill schema:description "designed to protect that vulnerable group in our society, our children" .
+    _:stmt_ChildProtectionBill_Desc_{video_id}_459 rdf:type rdf:Statement ;
+        rdf:subject bbp:Bill_ChildProtectionBill ;
+        rdf:predicate schema:description ;
+        rdf:object "designed to protect that vulnerable group in our society, our children" ;
+        prov:wasDerivedFrom [
+            a bbp:TranscriptSegment ;
+            bbp:fromVideo sess:video_{video_id} ;
+            bbp:startTimeOffset "459.0"^^xsd:decimal ;
+            bbp:endTimeOffset "478.0"^^xsd:decimal # Inferred from the start time of the line after the supporting text ends (478)
+        ] .
+    ```
+    *Ensure a unique blank node identifier (e.g., `_:stmt_SubjectPredicate_VideoID_StartTime`) for each `rdf:Statement` to prevent collisions when combining graphs.*
 
-9. Replace pronouns with canonical URIs or literals.
+6.  **Handling `[unknown]`:** If a name or specific detail is marked as `[unknown]` (e.g., `[unknown] H`), use a placeholder like "Unknown H" for the name portion in the URI and `schema:name` property. Do not invent information.
+7.  **URI Naming Convention:**
+    *   **Parliamentarians:** `bbp:Parliamentarian_FirstNameLastName` (e.g., `bbp:Parliamentarian_UnknownH`, `bbp:Parliamentarian_StMichaelSouth`, `bbp:Parliamentarian_StPhilipWest`, `bbp:Parliamentarian_ChristChurchEast`, `bbp:Parliamentarian_StJohn`, `bbp:Parliamentarian_StGeorgeNorth`). Use the last name if known, otherwise the constituency, or 'Unknown' for unnamed speakers.
+    *   **Constituencies:** `bbp:Constituency_Name` (e.g., `bbp:Constituency_StPeter`, `bbp:Constituency_StMichaelSouth`).
+    *   **Political Parties:** `bbp:PoliticalParty_Name` (e.g., `bbp:PoliticalParty_BarbadosLabourParty`, `bbp:PoliticalParty_DemocraticLabourParty`).
+    *   **Bills/Legislation:** `bbp:Bill_BillName` (e.g., `bbp:Bill_ChildProtectionBill`), `bbp:Legislation_LegislationName_Year` (e.g., `bbp:Legislation_PreventionOfCruelty_1904`).
+    *   **Organizations (General):** `bbp:Org_Name` (e.g., `bbp:Org_ChildCareBoard`, `bbp:Org_UNICEF`, `bbp:Org_InterAmericanDevelopmentBank`).
+    *   **Schools:** `bbp:School_Name` (e.g., `bbp:School_AllSaintsPrimary`, `bbp:School_SpringerMemorial`).
+    *   **Locations:** `schema:Place_Name` (e.g., `schema:Place_Barbados`, `schema:Place_Washington`, `schema:Place_BankHall`, `schema:Place_StPeter`). Note: Prefer `schema:Place` for general locations and `bbp:Constituency` for specific parliamentary constituencies.
+    *   **Concepts/Topics:** `bbp:Concept_TopicName` (e.g., `bbp:Concept_ChildProtection`, `bbp:Concept_MandatoryReporting`, `bbp:Concept_ViolenceInSchools`).
+    *   **Events:** `schema:Event_EventName_Year` (e.g., `schema:Event_SpringerMemorialDrill_2023`, `schema:Event_IDBSurveyControversy_2017`).
+    *   **Conventions/Treaties:** `bbp:Convention_Name` (e.g., `bbp:Convention_UNCRC`).
 
-10. Output **only valid Turtle** – no commentary, no Markdown.
+**Entities and Relationships to Extract (Be comprehensive for *all* speakers and entities mentioned):**
 
-11. Input consists of lines with an integer as the seconds offset from the start of the video file and then a sentence or two.
+1.  **Parliamentary Session (`sess:dR-eoAEvPH4_session`):**
+    *   Identify the main Bill being debated (`bbp:debatesBill`).
+    *   Link to the `bbp:VideoRecording` via `bbp:recordedIn`.
+2.  **Parliamentarians:**
+    *   Create a `schema:Person` and `bbp:Parliamentarian` instance for each speaker.
+    *   Extract their `schema:name` (e.g., "Unknown H", "Member for St. Michael South").
+    *   Extract their `bbp:hasRole` (e.g., "Member for St. Peter", "Minister of Education", "Minister of Youth", "Leader of the Opposition", "Chief Parliamentary Counsel acting", "Attorney General").
+    *   Extract which `bbp:Constituency` they `bbp:representsConstituency`.
+    *   Extract their `org:memberOf` `bbp:PoliticalParty` if stated or strongly implied (e.g., "proud member of" for BLP).
+    *   Record their `bbp:supportsBill` or `bbp:opposesBill` (the main Bill being debated).
+    *   Note any `bbp:criticizes` or `bbp:commends` relationships with other parties, organizations, or individuals.
+    *   Note any `bbp:discussesConcept` (key topics mentioned, e.g., "child protection", "mandatory reporting", "discrimination", "family unit", "violence in schools", "consultation", "democracy").
+    *   Note any `bbp:refersToLegislation` or `bbp:citesConvention`.
+    *   Note any `bbp:describesEvent`.
+    *   Capture explicit familial relationships (`bbp:sonOf`, `bbp:husbandOf`, `bbp:fatherOf`, `bbp:seesAs`) where mentioned.
+3.  **The Bill under Debate:**
+    *   Create a `bbp:Bill` instance (identified as "Child Protection Bill").
+    *   Capture its `schema:name` and stated `schema:description` or `bbp:hasPurpose`.
+    *   Note its age or the age of legislation it replaces, using `bbp:replacesLegislation`.
+4.  **Other Legislation/Laws Mentioned:**
+    *   Create `bbp:Legislation` instances for each named law.
+    *   Capture their `schema:name` and `bbp:enactedYear` (if specified, use `xsd:gYear`).
+5.  **Organizations:**
+    *   Create `org:Organization` (or more specific types like `bbp:PoliticalParty`, `bbp:Ministry`, `bbp:School`) instances for all named organizations (e.g., All Saints Primary, Barbados Secondary School's Entrance Examination, Child Care Board, International Labour Organisation, UNICEF, IDB, Holder Foundation, Lane Trust, Barbados Union of Teachers, Ministry of Public Service, Juvenile Justice, Bar Association, Criminal Justice Reform Committee, Parents' Association, Students' Council).
+    *   Capture their `schema:name`.
+    *   Note any `bbp:isLocatedIn` relationships.
+    *   Note any `bbp:involvedInEvent` or `bbp:responsibleFor` relationships.
+    *   Note any specific initiatives or roles mentioned (e.g., "Digital Literacy Curriculum" for Ministry of Education).
+6.  **Locations:**
+    *   Create `schema:Place` instances for all named places (e.g., St. Peter, St. Michael South, Christ Church East, St. Philip West, St. John, St. George North, Bank Hall, Washington, Government Hill, Mount Tabor, Station Hill).
+    *   Capture `schema:name`.
+7.  **Key Concepts/Topics:**
+    *   Create `bbp:Concept` instances for significant themes.
+    *   Use `rdfs:label` for the concept name.
+8.  **Events:**
+    *   Create `schema:Event` (or `bbp:ParliamentaryEvent` for specific parliamentary-related incidents) instances for specific incidents or historical occurrences (e.g., 1890s hunger uprising, Springer Memorial School drill, IDB survey).
+    *   Capture `schema:name`, `schema:startDate` (if year or full date is mentioned, use `xsd:gYear` or `xsd:date`), `schema:description`, `bbp:involvedParty`.
+9.  **Conventions/Treaties:**
+    *   Create `bbp:Convention` instances for international agreements.
+    *   Capture `schema:name` and `bbp:adoptedYear` (if mentioned, use `xsd:gYear`).
 
-**Template structure:**
-```turtle
-# First: Define all entities and predicates with labels
-ex:EntityName rdfs:label "Human Readable Name" .
-pol:predicateName rdfs:label "human readable description of action" .
-
-# Then: Use them in statements
-ex:Subject pol:predicate ex:Object .
-
-# Finally: Add reification for provenance
-[] rdf:type rdf:Statement ;
-   rdf:subject ex:Subject ;
-   rdf:predicate pol:predicate ;
-   rdf:object ex:Object ;
-   ex:source ex:{video_id} ;
-   ex:offset "123"^^xsd:decimal .
-```
+**Note on Verbosity:** Due to the requirement for reified statements for each triple to capture provenance, the generated graph will be significantly more verbose than a graph without this detailed provenance.
 
 video_id: {video_id}
 
@@ -169,6 +238,8 @@ Use the original transcript as context to ensure that:
 - Relationships make sense in context
 - URIs are properly formed and consistent
 - All semantic meaning is preserved
+
+If you see multiple errors, fix them all in one go. Do not output any additional commentary or explanations.
 
 Return ONLY the corrected Turtle syntax with no additional commentary or explanations."""
 
@@ -247,7 +318,7 @@ Return ONLY the corrected Turtle syntax with no additional commentary or explana
         ]
         
         try:
-            response = self.llm.invoke(messages)
+            response = self.llm_convert.invoke(messages)
             raw_content = response.content.strip()
             
             # Clean any markdown formatting
@@ -269,15 +340,11 @@ Return ONLY the corrected Turtle syntax with no additional commentary or explana
         Returns:
             Corrected RDF Turtle content
         """
-        # Truncate transcript if it's very long to avoid token limits
-        transcript_excerpt = original_transcript
-        if len(original_transcript) > 2000:
-            transcript_excerpt = original_transcript[:2000] + "\n... (transcript truncated for context)"
         
         correction_message = f"""{self.correction_prompt}
 
 ORIGINAL TRANSCRIPT (for context):
-{transcript_excerpt}
+{original_transcript}
 
 PARSER ERROR MESSAGE:
 {error_message}
@@ -290,7 +357,7 @@ RDF CONTENT TO FIX:
         ]
         
         try:
-            response = self.llm.invoke(messages)
+            response = self.llm_correct.invoke(messages)
             corrected_content = response.content.strip()
             
             # Clean any markdown formatting that might have been added
