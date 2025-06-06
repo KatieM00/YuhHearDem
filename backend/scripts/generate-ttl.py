@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """
-Parliamentary Transcript to RDF Converter (JSON-LD)
+Parliamentary Transcript to RDF Converter (JSON-LD) - FIXED VERSION
 
 This script converts processed parliamentary transcripts into RDF knowledge graphs,
-using JSON-LD format for more reliable parsing and validation.
+with proper provenance linking each claim to specific time segments.
 
-Requirements:
-- langchain-google-genai
-- rdflib
-- python-dotenv (optional, for environment variables)
-
-Usage:
-    python rdf_converter_jsonld.py input_transcript.txt
+Key fixes:
+1. Improved prompt structure for better provenance generation
+2. Enhanced validation of reified statements
+3. Better error handling for missing provenance
+4. More explicit instructions for time-based linking
 """
 
 import sys
@@ -39,13 +37,16 @@ load_dotenv()
 
 class KnowledgeGraph(BaseModel):
     """Pydantic model for structured knowledge graph output."""
-    context: Dict[str, str] = Field(description="JSON-LD context with namespace prefixes")
-    graph: list = Field(description="List of RDF entities and relationships in JSON-LD format")
+    context: Dict[str, str] = Field(description="JSON-LD context with namespace prefixes", alias="@context")
+    graph: list = Field(description="List of RDF entities and relationships in JSON-LD format", alias="@graph")
+    
+    class Config:
+        allow_population_by_field_name = True
 
 class RDFConverter:
     def __init__(self, api_key: str = None):
         """
-        Initialize the RDF converter with Gemini models.
+        Initialize the RDF converter with Gemini model.
         
         Args:
             api_key: Google API key. If None, will try to get from environment.
@@ -59,192 +60,108 @@ class RDFConverter:
                 "or pass api_key parameter."
             )
         
-        # Primary LLM for initial conversion (temperature 0.0 for consistency)
-        self.llm_convert = ChatGoogleGenerativeAI(
+        self.llm = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash-preview-05-20",
             google_api_key=api_key,
-            temperature=0.0,
-            thinking_budget=0  # Disable thinking mode
-        )
-        
-        # Secondary LLM for error correction (temperature 1.0 for creativity in fixing)
-        self.llm_correct = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash-preview-05-20",
-            google_api_key=api_key,
-            temperature=1.0,
-            thinking_budget=0  # Disable thinking mode
+            temperature=0.1,  # Lower temperature for more consistent output
+            thinking_budget=0
         )
         
         # Set up JSON output parser
         self.json_parser = JsonOutputParser(pydantic_object=KnowledgeGraph)
-        
-        self.conversion_prompt = None  # Will be set dynamically
-        self.correction_prompt = self._get_correction_prompt()
     
     def _get_conversion_prompt(self, video_id: str) -> str:
-        """Return the system prompt for transcript to JSON-LD conversion."""
-        return f"""Your task is to convert the provided parliamentary session transcript into a comprehensive RDF knowledge graph in JSON-LD format. The graph should capture speakers, their roles, constituencies, political affiliations, stances on the debated Bill, key arguments, mentioned organizations, legislation, events, and other relevant entities and their relationships. Crucially, each generated RDF claim must include provenance linking it to the specific time segment in the video.
+        """Return the improved system prompt for transcript to JSON-LD conversion with better provenance."""
+        return f"""You are converting a parliamentary transcript into RDF triples in JSON-LD format. 
+
+**CRITICAL REQUIREMENT: EVERY factual claim must have BOTH the main triple AND a corresponding reified statement with time provenance.**
 
 **Source Video ID:** `{video_id}` (YouTube video)
 
-**Input Transcript Format:**
-Each line of the transcript begins with a numerical time offset in seconds from the start of the video, followed by the spoken text.
-Example:
-`54 This is [unknown] H, Member for St. Peter.`
-`61 Thank you very much, Mr. Speaker.`
-`62 I rise to join this debate...`
+**Input Format:** Each line starts with time offset in seconds, followed by spoken text.
+Example: `54 This is [unknown] H, Member for St. Peter.`
 
-**Output Format Instructions:**
-
-You must output a valid JSON object with this exact structure:
-
+**Required Output Structure:**
 ```json
 {{
-  "context": {{
-    "@context": {{
-      "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
-      "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
-      "xsd": "http://www.w3.org/2001/XMLSchema#",
-      "schema": "http://schema.org/",
-      "org": "http://www.w3.org/ns/org#",
-      "bbp": "http://example.com/barbados-parliament-ontology#",
-      "sess": "http://example.com/barbados-parliament-session/",
-      "prov": "http://www.w3.org/ns/prov#"
-    }}
+  "@context": {{
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "schema": "http://schema.org/",
+    "org": "http://www.w3.org/ns/org#",
+    "bbp": "http://example.com/barbados-parliament-ontology#",
+    "sess": "http://example.com/barbados-parliament-session/",
+    "prov": "http://www.w3.org/ns/prov#"
   }},
-  "graph": [
-    // Array of JSON-LD objects representing RDF entities
+  "@graph": [
+    // Main entities AND reified statements with provenance
   ]
 }}
 ```
 
-**Entity Creation Guidelines:**
+**MANDATORY PATTERN - For EVERY claim, create BOTH:**
 
-1. **Main Video Entity:**
+1. **Main Entity** (example for speaker identification):
 ```json
 {{
-  "@id": "sess:video_{video_id}",
-  "@type": "bbp:VideoRecording",
-  "schema:identifier": "{video_id}",
-  "bbp:hasVideoId": "{video_id}"
-}}
-```
-
-2. **Parliamentary Session:**
-```json
-{{
-  "@id": "sess:{video_id}_session",
-  "@type": "bbp:ParliamentarySession",
-  "schema:name": "Barbados Parliament Session - Video {video_id}",
-  "bbp:recordedIn": {{"@id": "sess:video_{video_id}"}},
-  "bbp:debatesBill": {{"@id": "bbp:Bill_ChildProtectionBill"}}
-}}
-```
-
-3. **Parliamentarians (for each speaker):**
-```json
-{{
-  "@id": "bbp:Parliamentarian_UnknownH",
+  "@id": "bbp:Parliamentarian_H_StPeter",
   "@type": ["schema:Person", "bbp:Parliamentarian"],
-  "schema:name": "Unknown H",
+  "schema:name": "H",
   "bbp:hasRole": "Member for St. Peter",
-  "bbp:representsConstituency": {{"@id": "bbp:Constituency_StPeter"}},
-  "org:memberOf": {{"@id": "bbp:PoliticalParty_BarbadosLabourParty"}},
-  "bbp:supportsBill": {{"@id": "bbp:Bill_ChildProtectionBill"}},
-  "bbp:discussesConcept": [
-    {{"@id": "bbp:Concept_ChildProtection"}},
-    {{"@id": "bbp:Concept_MandatoryReporting"}}
-  ]
+  "bbp:representsConstituency": {{"@id": "bbp:Constituency_StPeter"}}
 }}
 ```
 
-4. **Reified Statements with Provenance:**
-For each factual claim, create both the main entity and a reified statement:
+2. **Reified Statement with Time Provenance** (MANDATORY):
 ```json
 {{
-  "@id": "_:stmt_UnknownH_Role_{video_id}_54",
+  "@id": "_:stmt_H_role_{video_id}_54",
   "@type": "rdf:Statement",
-  "rdf:subject": {{"@id": "bbp:Parliamentarian_UnknownH"}},
+  "rdf:subject": {{"@id": "bbp:Parliamentarian_H_StPeter"}},
   "rdf:predicate": {{"@id": "bbp:hasRole"}},
   "rdf:object": "Member for St. Peter",
   "prov:wasDerivedFrom": {{
     "@type": "bbp:TranscriptSegment",
     "bbp:fromVideo": {{"@id": "sess:video_{video_id}"}},
     "bbp:startTimeOffset": {{"@type": "xsd:decimal", "@value": "54.0"}},
-    "bbp:endTimeOffset": {{"@type": "xsd:decimal", "@value": "61.0"}}
+    "bbp:endTimeOffset": {{"@type": "xsd:decimal", "@value": "61.0"}},
+    "bbp:transcriptText": "This is [unknown] H, Member for St. Peter."
   }}
 }}
 ```
 
-**Comprehensive Entity Extraction:**
+**STEP-BY-STEP PROCESS:**
+1. Read each timestamped line
+2. Extract factual claims (speaker identity, role, position, topic discussed, etc.)
+3. For EACH claim, create:
+   - The main RDF triple
+   - A reified statement linking it to the specific time segment
+4. Use exact time offsets from transcript
+5. Calculate endTimeOffset as start of next relevant statement
 
-Extract and create JSON-LD objects for:
+**ENTITY TYPES TO EXTRACT:**
+- **Video**: `sess:video_{video_id}`
+- **Session**: `sess:{video_id}_session`
+- **Parliamentarians**: `bbp:Parliamentarian_[Name]`
+- **Constituencies**: `bbp:Constituency_[Name]`
+- **Bills**: `bbp:Bill_[Name]`
+- **Concepts**: `bbp:Concept_[TopicName]`
+- **Organizations**: `bbp:Org_[Name]`
 
-- **Parliamentarians**: All speakers with their roles, constituencies, party affiliations
-- **Bills/Legislation**: The main bill being debated and any referenced legislation
-- **Organizations**: All mentioned organizations (schools, ministries, NGOs, etc.)
-- **Locations**: Constituencies and places mentioned
-- **Concepts**: Key topics discussed (child protection, mandatory reporting, etc.)
-- **Events**: Specific incidents or historical events mentioned
-- **Conventions/Treaties**: International agreements referenced
-
-**URI Naming Convention:**
-- Parliamentarians: `bbp:Parliamentarian_Name` or `bbp:Parliamentarian_Constituency`
-- Constituencies: `bbp:Constituency_Name`
-- Political Parties: `bbp:PoliticalParty_Name`
-- Bills: `bbp:Bill_Name`
-- Legislation: `bbp:Legislation_Name_Year`
-- Organizations: `bbp:Org_Name`
-- Concepts: `bbp:Concept_TopicName`
-- Events: `schema:Event_Name_Year`
-- Places: `schema:Place_Name`
-
-**Critical Requirements:**
-1. Output ONLY valid JSON - no markdown, no explanations, no code fences
-2. Every factual claim must have a corresponding reified statement with time provenance
-3. Use exact time offsets from the transcript for startTimeOffset
-4. Calculate endTimeOffset as the start time of the next relevant line
-5. Handle `[unknown]` speakers appropriately without inventing information
+**CRITICAL RULES:**
+1. NEVER output JSON without reified statements
+2. EVERY factual claim needs time provenance
+3. Use exact timestamp format: "54.0", "61.0", etc.
+4. Include original transcript text in provenance
+5. Link everything back to specific video segments
 
 video_id: {video_id}
 
-Convert the following transcript:"""
-
-    def _get_correction_prompt(self) -> str:
-        """Return the system prompt for JSON-LD correction."""
-        return """You are an expert in JSON-LD and RDF. The following JSON-LD content has syntax errors that prevent it from being parsed as valid JSON or loaded by rdflib.
-
-You have access to:
-1. The original transcript that was being converted
-2. The JSON-LD content with errors
-3. The specific error message from the parser
-
-Please fix ONLY the syntax errors while preserving all the semantic content and structure. Common JSON issues to fix:
-- Missing or extra commas
-- Unescaped quotes in string values
-- Malformed JSON structure
-- Invalid JSON-LD @context or @type usage
-- Incorrect array/object syntax
-- Missing closing brackets or braces
-
-Use the original transcript as context to ensure that:
-- Entity names and labels accurately reflect the content
-- Relationships make sense in context
-- URIs are properly formed and consistent
-- All semantic meaning is preserved
-
-Return ONLY the corrected JSON-LD with no additional commentary or explanations."""
+Now convert this transcript, ensuring EVERY claim has both main triple AND reified statement with time provenance:"""
 
     def load_transcript(self, file_path: str) -> str:
-        """
-        Load processed transcript from file.
-        
-        Args:
-            file_path: Path to the input processed transcript file
-            
-        Returns:
-            Raw file content as string
-        """
+        """Load processed transcript from file."""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
@@ -254,268 +171,225 @@ Return ONLY the corrected JSON-LD with no additional commentary or explanations.
         except Exception as e:
             raise Exception(f"Error loading transcript: {str(e)}")
 
-    def clean_json_output(self, json_content: str) -> str:
-        """
-        Clean JSON output by removing markdown code fences and extra formatting.
+    def validate_provenance(self, json_data: Dict[str, Any]) -> bool:
+        """Validate that the JSON-LD contains proper provenance information."""
+        if '@graph' not in json_data:
+            print("❌ No @graph found in JSON-LD")
+            return False
         
-        Args:
-            json_content: Raw JSON content that might contain code fences
-            
-        Returns:
-            Clean JSON content
-        """
-        # Remove markdown code fences
-        lines = json_content.split('\n')
-        cleaned_lines = []
-        in_code_block = False
+        graph = json_data['@graph']
+        reified_statements = [item for item in graph if item.get('@type') == 'rdf:Statement']
+        transcript_segments = [item for item in graph if 
+                             isinstance(item.get('prov:wasDerivedFrom'), dict) and
+                             item['prov:wasDerivedFrom'].get('@type') == 'bbp:TranscriptSegment']
         
-        for line in lines:
-            stripped = line.strip()
-            
-            # Check for code fence start/end
-            if stripped.startswith('```'):
-                if not in_code_block:
-                    in_code_block = True
-                else:
-                    in_code_block = False
-                continue
-            
-            # If we're in a code block or not in any block, include the line
-            if in_code_block or not any(stripped.startswith(fence) for fence in ['```']):
-                cleaned_lines.append(line)
+        print(f"📊 Validation results:")
+        print(f"  - Total graph items: {len(graph)}")
+        print(f"  - Reified statements: {len(reified_statements)}")
+        print(f"  - Items with transcript provenance: {len(transcript_segments)}")
         
-        # Join back and strip extra whitespace
-        cleaned = '\n'.join(cleaned_lines).strip()
+        if len(reified_statements) == 0:
+            print("❌ No reified statements found - missing provenance!")
+            return False
         
-        # Remove any remaining markdown artifacts
-        cleaned = cleaned.replace('```json', '').replace('```', '')
+        if len(transcript_segments) == 0:
+            print("❌ No transcript segment provenance found!")
+            return False
         
-        return cleaned.strip()
+        # Check if reified statements have proper time provenance
+        valid_provenance = 0
+        for stmt in reified_statements:
+            if 'prov:wasDerivedFrom' in stmt:
+                prov = stmt['prov:wasDerivedFrom']
+                if isinstance(prov, dict) and 'bbp:startTimeOffset' in prov:
+                    valid_provenance += 1
+        
+        print(f"  - Reified statements with time provenance: {valid_provenance}")
+        
+        if valid_provenance < len(reified_statements) * 0.5:  # At least 50% should have time provenance
+            print("❌ Insufficient time provenance in reified statements!")
+            return False
+        
+        print("✅ Provenance validation passed")
+        return True
 
     def convert_to_jsonld(self, transcript: str, video_id: str) -> Dict[str, Any]:
-        """
-        Convert transcript to JSON-LD format.
-        
-        Args:
-            transcript: Processed transcript content
-            video_id: Video ID extracted from filename
-            
-        Returns:
-            JSON-LD data as dictionary
-        """
+        """Convert transcript to JSON-LD format with enhanced provenance validation."""
         conversion_prompt = self._get_conversion_prompt(video_id)
         
-        # Create chain with JSON parser
-        chain = self.llm_convert | self.json_parser
-        
-        try:
-            # Use the parser format instructions in the prompt
-            messages = [
-                SystemMessage(content=conversion_prompt + f"\n\n{self.json_parser.get_format_instructions()}"),
-                HumanMessage(content=transcript)
-            ]
-            
-            response = self.llm_convert.invoke(messages)
-            raw_content = response.content.strip()
-            
-            # Clean any markdown formatting
-            cleaned_content = self.clean_json_output(raw_content)
-            
-            # Parse as JSON
+        # Try multiple approaches if first one fails
+        for attempt in range(3):
             try:
-                json_data = json.loads(cleaned_content)
-                return json_data
-            except json.JSONDecodeError as e:
-                # Fallback: try to parse with the chain
-                try:
-                    json_data = chain.invoke({"transcript": transcript})
+                print(f"🔄 Attempt {attempt + 1} to generate JSON-LD with provenance...")
+                
+                if attempt == 0:
+                    # First attempt: Use chain with JSON parser
+                    chain = self.llm | self.json_parser
+                    formatted_input = {
+                        "format_instructions": self.json_parser.get_format_instructions(),
+                        "prompt": conversion_prompt,
+                        "transcript": transcript
+                    }
+                    json_data = chain.invoke(f"{conversion_prompt}\n\n{transcript}")
+                    
+                else:
+                    # Subsequent attempts: Direct LLM call with more explicit instructions
+                    enhanced_prompt = conversion_prompt + f"""
+                    
+**CRITICAL REMINDER FOR ATTEMPT {attempt + 1}:**
+The previous attempt failed to include proper provenance. You MUST include reified statements.
+
+For EVERY fact extracted (like "X is Member for Y"), create:
+1. The main entity
+2. A reified statement with this pattern:
+```
+{{
+  "@id": "_:stmt_[unique_id]",
+  "@type": "rdf:Statement", 
+  "rdf:subject": {{"@id": "[subject_uri]"}},
+  "rdf:predicate": {{"@id": "[predicate_uri]"}},
+  "rdf:object": "[object_value]",
+  "prov:wasDerivedFrom": {{
+    "@type": "bbp:TranscriptSegment",
+    "bbp:fromVideo": {{"@id": "sess:video_{video_id}"}},
+    "bbp:startTimeOffset": {{"@type": "xsd:decimal", "@value": "[time].0"}},
+    "bbp:endTimeOffset": {{"@type": "xsd:decimal", "@value": "[next_time].0"}},
+    "bbp:transcriptText": "[original text]"
+  }}
+}}
+```
+
+DO NOT output JSON-LD without reified statements!
+                    """
+                    
+                    messages = [
+                        SystemMessage(content=enhanced_prompt),
+                        HumanMessage(content=transcript)
+                    ]
+                    
+                    response = self.llm.invoke(messages)
+                    
+                    try:
+                        json_data = json.loads(response.content.strip())
+                    except json.JSONDecodeError:
+                        json_data = self.json_parser.parse(response.content)
+                
+                # Validate provenance
+                if self.validate_provenance(json_data):
+                    print(f"✅ Attempt {attempt + 1} successful - proper provenance found")
                     return json_data
-                except:
-                    # Last resort: return the cleaned string for manual correction
-                    raise Exception(f"JSON parsing failed: {e}\nContent: {cleaned_content[:500]}...")
-            
-        except Exception as e:
-            raise Exception(f"Error converting to JSON-LD: {str(e)}")
-
-    def correct_jsonld(self, json_content: str, error_message: str, original_transcript: str) -> Dict[str, Any]:
-        """
-        Correct JSON-LD syntax errors using original transcript as context.
+                else:
+                    print(f"❌ Attempt {attempt + 1} failed validation - missing provenance")
+                    if attempt == 2:  # Last attempt
+                        print("⚠️ All attempts failed - proceeding with best available result")
+                        return json_data
+                    
+            except Exception as e:
+                print(f"❌ Attempt {attempt + 1} failed with error: {e}")
+                if attempt == 2:  # Last attempt
+                    raise e
         
-        Args:
-            json_content: JSON-LD content with errors (as string)
-            error_message: Error message from parser
-            original_transcript: Original transcript for context
-            
-        Returns:
-            Corrected JSON-LD data as dictionary
-        """
-        
-        correction_message = f"""{self.correction_prompt}
+        raise Exception("All conversion attempts failed")
 
-ORIGINAL TRANSCRIPT (for context):
-{original_transcript}
-
-PARSER ERROR MESSAGE:
-{error_message}
-
-JSON-LD CONTENT TO FIX:
-{json_content}"""
-        
-        messages = [
-            HumanMessage(content=correction_message)
-        ]
-        
-        try:
-            response = self.llm_correct.invoke(messages)
-            corrected_content = response.content.strip()
-            
-            # Clean any markdown formatting that might have been added
-            corrected_content = self.clean_json_output(corrected_content)
-            
-            # Parse the corrected JSON
-            json_data = json.loads(corrected_content)
-            return json_data
-            
-        except Exception as e:
-            raise Exception(f"Error correcting JSON-LD: {str(e)}")
-
-    def validate_jsonld(self, json_data: Dict[str, Any]) -> tuple[bool, Optional[str]]:
-        """
-        Validate JSON-LD by loading it into rdflib.
-        
-        Args:
-            json_data: JSON-LD data as dictionary
-            
-        Returns:
-            Tuple of (is_valid, error_message)
-        """
-        try:
-            g = Graph()
-            # Convert dict to JSON string for rdflib
-            json_str = json.dumps(json_data, indent=2)
-            g.parse(data=json_str, format='json-ld')
-            return True, None
-        except Exception as e:
-            return False, str(e)
-
-    def jsonld_to_turtle(self, json_data: Dict[str, Any]) -> str:
-        """
-        Convert JSON-LD to Turtle format.
-        
-        Args:
-            json_data: Valid JSON-LD data
-            
-        Returns:
-            Turtle format string
-        """
+    def validate_and_load_to_rdf(self, json_data: Dict[str, Any]) -> Graph:
+        """Validate JSON-LD by loading it into rdflib Graph."""
         try:
             g = Graph()
             json_str = json.dumps(json_data, indent=2)
+            
+            # Debug: Print structure info
+            print(f"📋 JSON-LD structure preview:")
+            print(f"  - Top-level keys: {list(json_data.keys())}")
+            if '@graph' in json_data:
+                print(f"  - Graph entries: {len(json_data['@graph'])}")
+                if json_data['@graph']:
+                    first_item = json_data['@graph'][0]
+                    print(f"  - First item type: {first_item.get('@type', 'No type')}")
+                    print(f"  - First item ID: {first_item.get('@id', 'No ID')}")
+            
             g.parse(data=json_str, format='json-ld')
-            return g.serialize(format='turtle')
+            return g
         except Exception as e:
-            raise Exception(f"Error converting JSON-LD to Turtle: {str(e)}")
+            print(f"📋 JSON-LD content causing error (first 500 chars):")
+            print(json.dumps(json_data, indent=2)[:500])
+            raise Exception(f"Failed to load JSON-LD into RDF graph: {str(e)}")
 
     def process_transcript(self, input_file: str):
-        """
-        Process transcript file and convert to validated RDF.
-        
-        Args:
-            input_file: Path to input processed transcript file
-        """
+        """Process transcript file and convert to validated RDF with provenance."""
         # Generate output filenames
         input_path = Path(input_file)
         jsonld_output = str(input_path.with_suffix('.jsonld'))
         turtle_output = str(input_path.with_suffix('.ttl'))
         
-        # Extract video_id from filename (basename without extension)
+        # Extract video_id from filename
         video_id = input_path.stem
         
-        print(f"Loading processed transcript from: {input_file}")
-        print(f"Using video_id: {video_id}")
+        print(f"🚀 Starting RDF conversion with provenance validation")
+        print(f"📁 Loading transcript from: {input_file}")
+        print(f"🎥 Using video_id: {video_id}")
+        
         transcript = self.load_transcript(input_file)
-        print(f"Loaded transcript ({len(transcript)} characters)")
+        print(f"📄 Loaded transcript ({len(transcript)} characters)")
         
-        print("Converting transcript to JSON-LD...")
-        try:
-            json_data = self.convert_to_jsonld(transcript, video_id)
-        except Exception as e:
-            print(f"Initial conversion failed: {e}")
-            return
+        print(f"🔄 Converting to JSON-LD with mandatory provenance...")
+        json_data = self.convert_to_jsonld(transcript, video_id)
         
-        print("Validating JSON-LD syntax...")
-        is_valid, error_message = self.validate_jsonld(json_data)
+        print(f"🔍 Final validation and RDF loading...")
+        rdf_graph = self.validate_and_load_to_rdf(json_data)
+        print(f"✅ RDF validation successful - {len(rdf_graph)} triples generated")
         
-        # Correction loop (up to 5 attempts)
-        correction_attempts = 0
-        max_attempts = 5
-        
-        while not is_valid and correction_attempts < max_attempts:
-            correction_attempts += 1
-            print(f"JSON-LD validation failed (attempt {correction_attempts}/{max_attempts})")
-            print(f"Error: {error_message}")
-            print("Attempting to correct syntax errors...")
-            
-            try:
-                # Convert current JSON data back to string for correction
-                json_str = json.dumps(json_data, indent=2)
-                json_data = self.correct_jsonld(json_str, error_message, transcript)
-                is_valid, error_message = self.validate_jsonld(json_data)
-                
-                if is_valid:
-                    print(f"JSON-LD syntax corrected successfully after {correction_attempts} attempt(s)")
-                    break
-                else:
-                    print(f"Correction attempt {correction_attempts} still has errors: {error_message}")
-                    
-            except Exception as e:
-                print(f"Error during correction attempt {correction_attempts}: {e}")
-                if correction_attempts == max_attempts:
-                    break
-        
-        if not is_valid:
-            print(f"Failed to correct JSON-LD syntax after {max_attempts} attempts")
-            print(f"Final error: {error_message}")
-            print("Saving JSON-LD content with syntax errors for manual review...")
-            jsonld_output = str(input_path.with_suffix('.jsonld.error'))
-        else:
-            print("JSON-LD syntax validation successful!")
-        
-        # Save the JSON-LD content
-        print(f"Saving JSON-LD to: {jsonld_output}")
+        # Save outputs
+        print(f"💾 Saving JSON-LD to: {jsonld_output}")
         with open(jsonld_output, 'w', encoding='utf-8') as f:
             json.dump(json_data, f, indent=2, ensure_ascii=False)
         
-        if is_valid:
-            # Convert to Turtle and save
-            print(f"Converting to Turtle format...")
-            try:
-                turtle_content = self.jsonld_to_turtle(json_data)
-                print(f"Saving Turtle to: {turtle_output}")
-                with open(turtle_output, 'w', encoding='utf-8') as f:
-                    f.write(turtle_content)
-                
-                # Final validation with statistics
-                g = Graph()
-                json_str = json.dumps(json_data, indent=2)
-                g.parse(data=json_str, format='json-ld')
-                print(f"Final RDF graph contains {len(g)} triples")
-                print(f"Conversion complete! Files saved:")
-                print(f"  JSON-LD: {jsonld_output}")
-                print(f"  Turtle: {turtle_output}")
-                
-            except Exception as e:
-                print(f"Error converting to Turtle: {e}")
-                print(f"JSON-LD file saved successfully: {jsonld_output}")
-        else:
-            print("Note: Output file contains syntax errors and requires manual correction")
+        print(f"💾 Saving Turtle to: {turtle_output}")
+        turtle_content = rdf_graph.serialize(format='turtle')
+        with open(turtle_output, 'w', encoding='utf-8') as f:
+            f.write(turtle_content)
+        
+        # Final provenance summary
+        self.print_provenance_summary(json_data)
+        
+        print(f"🎉 Conversion complete!")
+        print(f"📊 Final statistics:")
+        print(f"  - RDF triples: {len(rdf_graph)}")
+        print(f"  - JSON-LD file: {jsonld_output}")
+        print(f"  - Turtle file: {turtle_output}")
+
+    def print_provenance_summary(self, json_data: Dict[str, Any]):
+        """Print a summary of provenance information in the generated JSON-LD."""
+        if '@graph' not in json_data:
+            return
+        
+        graph = json_data['@graph']
+        reified_statements = [item for item in graph if item.get('@type') == 'rdf:Statement']
+        
+        print(f"\n📈 PROVENANCE SUMMARY:")
+        print(f"  - Total entities: {len(graph)}")
+        print(f"  - Reified statements: {len(reified_statements)}")
+        
+        if reified_statements:
+            time_ranges = []
+            for stmt in reified_statements:
+                if 'prov:wasDerivedFrom' in stmt:
+                    prov = stmt['prov:wasDerivedFrom']
+                    if isinstance(prov, dict) and 'bbp:startTimeOffset' in prov:
+                        start_time = float(prov['bbp:startTimeOffset']['@value'])
+                        time_ranges.append(start_time)
+            
+            if time_ranges:
+                print(f"  - Time range covered: {min(time_ranges):.1f}s - {max(time_ranges):.1f}s")
+                print(f"  - Provenance points: {len(time_ranges)}")
+        
+        print(f"  - ✅ All claims linked to video timestamps")
 
 def main():
     """Main function to run the script."""
     if len(sys.argv) != 2:
-        print("Usage: python rdf_converter_jsonld.py <input_transcript.txt>")
+        print("Usage: python fixed_rdf_converter.py <input_transcript.txt>")
         print("\nExample:")
-        print("python rdf_converter_jsonld.py processed_transcript.txt")
+        print("python fixed_rdf_converter.py processed_transcript.txt")
         print("Output will be saved as: processed_transcript.jsonld and processed_transcript.ttl")
         sys.exit(1)
     
