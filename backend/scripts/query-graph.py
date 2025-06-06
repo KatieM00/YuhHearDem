@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-MongoDB Graph Query Tool
+MongoDB Graph Query Tool with Vector Search Support
 
-This script queries the MongoDB graph database and returns relevant nodes
-with configurable traversal depth, outputting results as RDF Turtle.
+This script queries the MongoDB graph database using both text and vector search,
+returning relevant nodes with configurable traversal depth, outputting results as RDF Turtle.
 
 Requirements:
 - pymongo
 - python-dotenv (optional, for environment variables)
+- sentence-transformers (optional, for vector search)
 
 Usage:
-    python mongodb_graph_query.py "query string" [--hops N] [--output file.ttl]
+    python query_graph.py "query string" [--hops N] [--output file.ttl] [--vector-only] [--text-only]
 """
 
 import sys
@@ -32,6 +33,13 @@ except ImportError as e:
     print("Please install required packages:")
     print("pip install pymongo python-dotenv rdflib")
     sys.exit(1)
+
+# Optional: Import sentence transformers for vector search
+try:
+    from sentence_transformers import SentenceTransformer
+    VECTOR_SEARCH_AVAILABLE = True
+except ImportError:
+    VECTOR_SEARCH_AVAILABLE = False
 
 # Load environment variables
 load_dotenv()
@@ -65,8 +73,80 @@ class GraphQuerier:
         self.edges = self.db.edges
         self.statements = self.db.statements
         self.videos = self.db.videos
+        
+        # Initialize embedding model for vector search
+        self.embedding_model = None
+        if VECTOR_SEARCH_AVAILABLE:
+            try:
+                print("🔄 Loading embedding model for vector search...")
+                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                print("✅ Vector search enabled")
+            except Exception as e:
+                print(f"⚠️  Vector search disabled: {e}")
     
-    def text_search_nodes(self, query: str, limit: int = 50) -> List[Dict]:
+    def generate_query_embedding(self, query: str) -> Optional[List[float]]:
+        """Generate embedding for the search query."""
+        if not self.embedding_model:
+            return None
+        
+        try:
+            embedding = self.embedding_model.encode(query)
+            return embedding.tolist()
+        except Exception as e:
+            print(f"⚠️  Failed to generate query embedding: {e}")
+            return None
+    
+    def vector_search_nodes(self, query: str, limit: int = 5) -> List[Dict]:
+        """
+        Perform vector search on node embeddings.
+        
+        Args:
+            query: Search query string
+            limit: Maximum number of results
+            
+        Returns:
+            List of matching node documents with similarity scores
+        """
+        if not self.embedding_model:
+            print("⚠️  Vector search not available")
+            return []
+        
+        print(f"🔍 Vector searching for: '{query}'")
+        
+        # Generate embedding for query
+        query_embedding = self.generate_query_embedding(query)
+        if not query_embedding:
+            return []
+        
+        try:
+            # MongoDB Atlas Vector Search aggregation pipeline
+            pipeline = [
+                {
+                    "$vectorSearch": {
+                        "index": "vector_index",  # Name of your vector search index
+                        "path": "embedding",
+                        "queryVector": query_embedding,
+                        "numCandidates": limit * 2,  # Search more candidates for better results
+                        "limit": limit
+                    }
+                },
+                {
+                    "$addFields": {
+                        "similarity_score": {"$meta": "vectorSearchScore"}
+                    }
+                }
+            ]
+            
+            results = list(self.nodes.aggregate(pipeline))
+            print(f"📍 Found {len(results)} vector matches")
+            return results
+            
+        except Exception as e:
+            print(f"⚠️  Vector search failed: {e}")
+            print("   Make sure you have created a vector search index named 'vector_index'")
+            return []
+    
+    def text_search_nodes(self, query: str, limit: int = 5) -> List[Dict]:
         """
         Perform text search on node labels and properties.
         
@@ -77,21 +157,29 @@ class GraphQuerier:
         Returns:
             List of matching node documents
         """
-        print(f"🔍 Searching for: '{query}'")
+        print(f"🔍 Text searching for: '{query}'")
         
-        # Text search on labels
-        text_results = list(self.nodes.find(
-            {"$text": {"$search": query}},
-            {"score": {"$meta": "textScore"}}
-        ).sort([("score", {"$meta": "textScore"})]).limit(limit))
+        # Text search on indexed fields (label, searchable_text)
+        text_results = []
+        try:
+            text_results = list(self.nodes.find(
+                {"$text": {"$search": query}},
+                {"score": {"$meta": "textScore"}}
+            ).sort([("score", {"$meta": "textScore"})]).limit(limit))
+        except Exception as e:
+            print(f"⚠️  Full-text search failed: {e}")
         
-        # Also search in property values (case-insensitive regex)
+        # Also search using regex on specific fields
         regex_pattern = re.compile(re.escape(query), re.IGNORECASE)
-        property_results = list(self.nodes.find({
+        regex_results = list(self.nodes.find({
             "$or": [
-                {"properties": {"$regex": regex_pattern}},
+                {"label": {"$regex": regex_pattern}},
                 {"local_name": {"$regex": regex_pattern}},
-                {"label": {"$regex": regex_pattern}}
+                {"searchable_text": {"$regex": regex_pattern}},
+                # Search in specific property values
+                {"properties.http://schema.org/name": {"$regex": regex_pattern}},
+                {"properties.http://www.w3.org/2000/01/rdf-schema#label": {"$regex": regex_pattern}},
+                {"properties.http://xmlns.com/foaf/0.1/name": {"$regex": regex_pattern}}
             ]
         }).limit(limit))
         
@@ -99,13 +187,103 @@ class GraphQuerier:
         seen_uris = set()
         combined_results = []
         
-        for result in text_results + property_results:
+        # Add text search results first (they have relevance scores)
+        for result in text_results:
             if result["uri"] not in seen_uris:
                 seen_uris.add(result["uri"])
+                result["search_type"] = "text_index"
                 combined_results.append(result)
         
-        print(f"📍 Found {len(combined_results)} initial matches")
+        # Add regex results
+        for result in regex_results:
+            if result["uri"] not in seen_uris:
+                seen_uris.add(result["uri"])
+                result["search_type"] = "regex"
+                combined_results.append(result)
+        
+        print(f"📍 Found {len(combined_results)} text matches")
         return combined_results
+    
+    def hybrid_search_nodes(self, query: str, limit: int = 5, vector_weight: float = 0.7) -> List[Dict]:
+        """
+        Perform hybrid search combining vector and text search results.
+        
+        Args:
+            query: Search query string
+            limit: Maximum number of results
+            vector_weight: Weight for vector search results (0.0 to 1.0)
+            
+        Returns:
+            List of matching node documents with combined scores
+        """
+        print(f"🔍 Hybrid searching for: '{query}'")
+        
+        # Get results from both search methods
+        vector_results = self.vector_search_nodes(query, limit)
+        text_results = self.text_search_nodes(query, limit)
+        
+        # Combine results with weighted scoring
+        combined_results = {}
+        
+        # Add vector search results
+        for result in vector_results:
+            uri = result["uri"]
+            vector_score = result.get("similarity_score", 0.0)
+            result["vector_score"] = vector_score
+            result["text_score"] = 0.0
+            result["hybrid_score"] = vector_score * vector_weight
+            result["search_types"] = ["vector"]
+            combined_results[uri] = result
+        
+        # Add/merge text search results
+        for result in text_results:
+            uri = result["uri"]
+            text_score = result.get("score", 0.5)  # Default score for regex matches
+            
+            if uri in combined_results:
+                # Merge with existing vector result
+                combined_results[uri]["text_score"] = text_score
+                combined_results[uri]["hybrid_score"] = (
+                    combined_results[uri]["vector_score"] * vector_weight + 
+                    text_score * (1 - vector_weight)
+                )
+                combined_results[uri]["search_types"].append(result.get("search_type", "text"))
+            else:
+                # New text-only result
+                result["vector_score"] = 0.0
+                result["text_score"] = text_score
+                result["hybrid_score"] = text_score * (1 - vector_weight)
+                result["search_types"] = [result.get("search_type", "text")]
+                combined_results[uri] = result
+        
+        # Sort by hybrid score and return top results
+        sorted_results = sorted(
+            combined_results.values(), 
+            key=lambda x: x["hybrid_score"], 
+            reverse=True
+        )[:limit]
+        
+        print(f"📍 Found {len(sorted_results)} hybrid matches")
+        return sorted_results
+    
+    def search_nodes(self, query: str, search_mode: str = "hybrid", limit: int = 5) -> List[Dict]:
+        """
+        Search for nodes using the specified search mode.
+        
+        Args:
+            query: Search query string
+            search_mode: "hybrid", "vector", or "text"
+            limit: Maximum number of results
+            
+        Returns:
+            List of matching node documents
+        """
+        if search_mode == "vector":
+            return self.vector_search_nodes(query, limit)
+        elif search_mode == "text":
+            return self.text_search_nodes(query, limit)
+        else:  # hybrid
+            return self.hybrid_search_nodes(query, limit)
     
     def get_connected_nodes(self, node_uris: Set[str], hops: int = 1) -> Set[str]:
         """
@@ -190,23 +368,41 @@ class GraphQuerier:
             "statements": statements
         }
     
-    def query_graph(self, query: str, hops: int = 2) -> Dict[str, Any]:
+    def query_graph(self, query: str, hops: int = 2, search_mode: str = "hybrid") -> Dict[str, Any]:
         """
         Perform complete graph query with traversal.
         
         Args:
             query: Search query string
             hops: Number of hops to traverse
+            search_mode: "hybrid", "vector", or "text"
             
         Returns:
-            Subgraph data
+            Subgraph data with search metadata
         """
         # Find initial matching nodes
-        initial_nodes = self.text_search_nodes(query)
+        initial_nodes = self.search_nodes(query, search_mode)
         
         if not initial_nodes:
             print("❌ No matching nodes found")
-            return {"nodes": [], "edges": [], "statements": []}
+            return {"nodes": [], "edges": [], "statements": [], "search_results": []}
+        
+        # Show top search results
+        print(f"\n🎯 Top search matches:")
+        for i, node in enumerate(initial_nodes[:5], 1):
+            score_info = []
+            if "hybrid_score" in node:
+                score_info.append(f"hybrid: {node['hybrid_score']:.3f}")
+            if "similarity_score" in node:
+                score_info.append(f"vector: {node['similarity_score']:.3f}")
+            if "score" in node:
+                score_info.append(f"text: {node['score']:.3f}")
+            
+            score_str = f" ({', '.join(score_info)})" if score_info else ""
+            search_types = node.get("search_types", ["unknown"])
+            print(f"   {i}. {node.get('label', node.get('local_name', 'Unknown'))}{score_str}")
+            print(f"      URI: {node['uri']}")
+            print(f"      Search: {', '.join(search_types)}")
         
         # Extract URIs from initial results
         initial_uris = {node["uri"] for node in initial_nodes}
@@ -216,6 +412,9 @@ class GraphQuerier:
         
         # Extract subgraph
         subgraph = self.get_subgraph(all_node_uris)
+        
+        # Add search results metadata
+        subgraph["search_results"] = initial_nodes
         
         return subgraph
     
@@ -290,7 +489,7 @@ class GraphQuerier:
             if "label" in node:
                 graph.add((node_uri, RDFS.label, Literal(str(node["label"]))))
             
-            # Add other properties
+            # Add other properties (excluding internal MongoDB fields)
             for prop_uri, prop_values in node.get("properties", {}).items():
                 if prop_uri == str(RDF.type):
                     continue  # Already handled above
@@ -366,9 +565,14 @@ class GraphQuerier:
         statements_with_provenance = sum(1 for stmt in subgraph['statements'] 
                                        if any(key in stmt for key in ["start_offset", "end_offset"]))
         
+        # Search results summary
+        search_summary = ""
+        if "search_results" in subgraph:
+            search_summary = f"# Initial search results: {len(subgraph['search_results'])}\n"
+        
         # Add comment header
         header_comment = f"""# Query results generated at {datetime.now(timezone.utc).isoformat()}Z
-# Nodes: {len(subgraph['nodes'])}, Edges: {len(subgraph['edges'])}, Statements: {len(subgraph['statements'])}
+{search_summary}# Nodes: {len(subgraph['nodes'])}, Edges: {len(subgraph['edges'])}, Statements: {len(subgraph['statements'])}
 # Statements with provenance: {statements_with_provenance}
 # Total triples: {len(rdf_graph)}
 
@@ -382,12 +586,18 @@ class GraphQuerier:
     
     def get_stats(self) -> Dict[str, int]:
         """Get database statistics."""
-        return {
+        stats = {
             "nodes": self.nodes.count_documents({}),
             "edges": self.edges.count_documents({}),
             "statements": self.statements.count_documents({}),
             "videos": self.videos.count_documents({})
         }
+        
+        # Check for vector search capabilities
+        nodes_with_embeddings = self.nodes.count_documents({"embedding": {"$exists": True}})
+        stats["nodes_with_embeddings"] = nodes_with_embeddings
+        
+        return stats
     
     def get_provenance_stats(self) -> Dict[str, Any]:
         """Get statistics about provenance data."""
@@ -413,14 +623,28 @@ class GraphQuerier:
 
 def main():
     """Main function with argument parsing."""
-    parser = argparse.ArgumentParser(description="Query MongoDB graph and output RDF Turtle")
+    parser = argparse.ArgumentParser(description="Query MongoDB graph with vector and text search")
     parser.add_argument("query", help="Search query string")
     parser.add_argument("--hops", type=int, default=2, help="Number of traversal hops (default: 2)")
     parser.add_argument("--output", "-o", help="Output file (default: stdout)")
     parser.add_argument("--stats", action="store_true", help="Show database statistics")
     parser.add_argument("--provenance", action="store_true", help="Show provenance statistics")
     
+    # Search mode options
+    search_group = parser.add_mutually_exclusive_group()
+    search_group.add_argument("--vector-only", action="store_true", help="Use only vector search")
+    search_group.add_argument("--text-only", action="store_true", help="Use only text search")
+    # Default is hybrid search
+    
     args = parser.parse_args()
+    
+    # Determine search mode
+    if args.vector_only:
+        search_mode = "vector"
+    elif args.text_only:
+        search_mode = "text"
+    else:
+        search_mode = "hybrid"
     
     try:
         # Initialize querier
@@ -449,8 +673,8 @@ def main():
             print()
         
         # Perform query
-        print(f"🚀 Querying: '{args.query}' with {args.hops} hops")
-        subgraph = querier.query_graph(args.query, args.hops)
+        print(f"🚀 Querying: '{args.query}' with {args.hops} hops using {search_mode} search")
+        subgraph = querier.query_graph(args.query, args.hops, search_mode)
         
         # Generate Turtle output
         turtle_output = querier.subgraph_to_turtle(subgraph)
@@ -472,8 +696,10 @@ def main():
         
         print(f"\n📋 Query Summary:")
         print(f"  Query: '{args.query}'")
+        print(f"  Search mode: {search_mode}")
         print(f"  Hops: {args.hops}")
-        print(f"  Nodes: {len(subgraph['nodes'])}")
+        print(f"  Initial matches: {len(subgraph.get('search_results', []))}")
+        print(f"  Final nodes: {len(subgraph['nodes'])}")
         print(f"  Edges: {len(subgraph['edges'])}")
         print(f"  Statements: {len(subgraph['statements'])}")
         print(f"  Statements with provenance: {statements_with_prov}")

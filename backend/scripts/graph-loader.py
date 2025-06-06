@@ -1,26 +1,29 @@
 #!/usr/bin/env python3
 """
-RDF to MongoDB Graph Loader
+RDF to MongoDB Graph Loader with Vector Search Support
 
 This script loads RDF Turtle files and saves them as graph structures in MongoDB Atlas
-for GraphRAG-style querying and analysis.
+for GraphRAG-style querying and analysis, with support for vector embeddings.
 
 Requirements:
 - pymongo
 - rdflib
 - python-dotenv (optional, for environment variables)
+- sentence-transformers (for generating embeddings)
 
 Usage:
-    python rdf_to_mongodb.py <rdf_file.ttl>
+    python graph_loader.py <rdf_file.ttl> [--skip-embeddings]
 """
 
 import sys
 import os
+import argparse
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from urllib.parse import urlparse
 import hashlib
 from datetime import datetime, timezone
+import re
 
 try:
     from pymongo import MongoClient, ASCENDING, TEXT
@@ -34,17 +37,27 @@ except ImportError as e:
     print("pip install pymongo rdflib python-dotenv")
     sys.exit(1)
 
+# Optional: Import sentence transformers for embeddings
+try:
+    from sentence_transformers import SentenceTransformer
+    EMBEDDINGS_AVAILABLE = True
+except ImportError:
+    EMBEDDINGS_AVAILABLE = False
+    print("⚠️  sentence-transformers not available. Install with: pip install sentence-transformers")
+
 # Load environment variables
 load_dotenv()
 
 class RDFToMongoLoader:
-    def __init__(self, connection_string: str = None, database_name: str = "parliamentary_graph"):
+    def __init__(self, connection_string: str = None, database_name: str = "parliamentary_graph", 
+                 use_embeddings: bool = True):
         """
         Initialize the RDF to MongoDB loader.
         
         Args:
             connection_string: MongoDB Atlas connection string. If None, will try to get from environment.
             database_name: Name of the MongoDB database to use
+            use_embeddings: Whether to generate vector embeddings for text content
         """
         if connection_string is None:
             connection_string = os.getenv('MONGODB_CONNECTION_STRING')
@@ -64,6 +77,18 @@ class RDFToMongoLoader:
             raise ConnectionFailure(f"Failed to connect to MongoDB: {e}")
         
         self.db = self.client[database_name]
+        self.use_embeddings = use_embeddings and EMBEDDINGS_AVAILABLE
+        
+        # Initialize embedding model if available
+        if self.use_embeddings:
+            try:
+                print("🔄 Loading embedding model...")
+                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                print("✅ Embedding model loaded successfully")
+            except Exception as e:
+                print(f"⚠️  Failed to load embedding model: {e}")
+                self.use_embeddings = False
+        
         self.setup_collections()
     
     def setup_collections(self):
@@ -80,7 +105,7 @@ class RDFToMongoLoader:
         except:
             pass
         try:
-            self.nodes.create_index([("label", TEXT)])
+            self.nodes.create_index([("label", TEXT), ("searchable_text", TEXT)])
         except:
             pass
         try:
@@ -161,6 +186,23 @@ class RDFToMongoLoader:
             pass
         
         print("✅ Collections and indexes set up successfully")
+        
+        if self.use_embeddings:
+            print("ℹ️  Vector search indexes need to be created manually in Atlas:")
+            print("   1. Go to your Atlas cluster")
+            print("   2. Navigate to Search > Create Search Index")
+            print("   3. Choose 'Vector Search' and use the nodes collection")
+            print("   4. Use this configuration:")
+            print("""   {
+     "fields": [
+       {
+         "type": "vector",
+         "path": "embedding",
+         "numDimensions": 384,
+         "similarity": "cosine"
+       }
+     ]
+   }""")
     
     def extract_video_id_from_ttl(self, ttl_file: str) -> str:
         """Extract video ID from TTL filename."""
@@ -185,6 +227,135 @@ class RDFToMongoLoader:
             return uri_str.split('/')[-1]
         else:
             return uri_str
+    
+    def extract_label_from_properties(self, properties: Dict[str, Any]) -> Optional[str]:
+        """
+        Extract the best label from properties, checking multiple possible fields.
+        Priority order: schema:name, rdfs:label, foaf:name, dcterms:title, schema:title
+        """
+        # Define common label/name/title properties in priority order
+        label_properties = [
+            "http://schema.org/name",           # schema:name
+            str(RDFS.label),                    # rdfs:label  
+            str(FOAF.name),                     # foaf:name
+            "http://purl.org/dc/terms/title",   # dcterms:title
+            "http://schema.org/title",          # schema:title
+            "http://www.w3.org/2004/02/skos/core#prefLabel",  # skos:prefLabel
+        ]
+        
+        for prop_uri in label_properties:
+            if prop_uri in properties:
+                value = properties[prop_uri]
+                # Handle both single values and lists
+                if isinstance(value, list):
+                    return str(value[0]) if value else None
+                else:
+                    return str(value)
+        
+        return None
+    
+    def create_searchable_text(self, uri_str: str, label: str, properties: Dict[str, Any], node_types: List[str]) -> str:
+        """
+        Create a comprehensive searchable text field from all node information.
+        """
+        text_parts = []
+        
+        # Add label/name (highest priority)
+        if label:
+            text_parts.append(label)
+        
+        # Add local name from URI (if different from label)
+        local_name = self.extract_local_name(uri_str)
+        if local_name and local_name != label:
+            # Convert camelCase to readable text
+            readable_local = re.sub(r'([a-z])([A-Z])', r'\1 \2', local_name)
+            text_parts.append(readable_local)
+        
+        # Add all name/title/label properties from the RDF
+        name_properties = [
+            "http://schema.org/name",
+            "http://schema.org/title", 
+            "http://www.w3.org/2000/01/rdf-schema#label",
+            "http://xmlns.com/foaf/0.1/name",
+            "http://purl.org/dc/terms/title",
+            "http://www.w3.org/2004/02/skos/core#prefLabel"
+        ]
+        
+        for prop_uri in name_properties:
+            if prop_uri in properties:
+                value = properties[prop_uri]
+                if isinstance(value, list):
+                    for v in value:
+                        if v and str(v).strip() and str(v) not in text_parts:
+                            text_parts.append(str(v).strip())
+                else:
+                    if value and str(value).strip() and str(value) not in text_parts:
+                        text_parts.append(str(value).strip())
+        
+        # Add descriptive properties
+        descriptive_properties = [
+            "http://schema.org/description",
+            "http://purl.org/dc/terms/description", 
+            "http://www.w3.org/2000/01/rdf-schema#comment",
+            "http://example.com/barbados-parliament-ontology#hasRole",
+        ]
+        
+        for prop_uri in descriptive_properties:
+            if prop_uri in properties:
+                value = properties[prop_uri]
+                if isinstance(value, list):
+                    for v in value:
+                        if v and str(v).strip():
+                            text_parts.append(str(v).strip())
+                else:
+                    if value and str(value).strip():
+                        text_parts.append(str(value).strip())
+        
+        # Add readable type names (but not generic ones)
+        for node_type in node_types:
+            type_name = self.extract_local_name(node_type)
+            if type_name and type_name not in ['Entity', 'Thing']:
+                # Convert camelCase to readable text
+                readable_type = re.sub(r'([a-z])([A-Z])', r'\1 \2', type_name)
+                text_parts.append(readable_type)
+        
+        # Clean up and deduplicate
+        clean_parts = []
+        seen = set()
+        
+        for part in text_parts:
+            if part and isinstance(part, str):
+                # Basic cleaning
+                clean_part = part.strip()
+                
+                # Skip very short or generic parts
+                if len(clean_part) < 2 or clean_part.lower() in ['entity', 'thing', 'object']:
+                    continue
+                
+                # Convert to lowercase for deduplication check
+                clean_lower = clean_part.lower()
+                if clean_lower not in seen:
+                    seen.add(clean_lower)
+                    clean_parts.append(clean_part)
+        
+        return ' '.join(clean_parts)
+    
+    def generate_embedding(self, text: str) -> Optional[List[float]]:
+        """Generate vector embedding for text content."""
+        if not self.use_embeddings or not text:
+            return None
+        
+        try:
+            # Clean text for embedding
+            clean_text = re.sub(r'\s+', ' ', text).strip()
+            if len(clean_text) < 3:  # Skip very short text
+                return None
+            
+            embedding = self.embedding_model.encode(clean_text)
+            return embedding.tolist()
+        except Exception as e:
+            print(f"⚠️  Failed to generate embedding: {e}")
+            return None
     
     def determine_node_type(self, uri: URIRef, graph: Graph) -> List[str]:
         """Determine the type(s) of a node from the RDF graph."""
@@ -281,6 +452,7 @@ class RDFToMongoLoader:
         
         nodes_added = 0
         nodes_updated = 0
+        embeddings_generated = 0
         
         for entity in entities:
             if isinstance(entity, BNode):
@@ -290,9 +462,26 @@ class RDFToMongoLoader:
             node_types = self.determine_node_type(entity, graph)
             properties = self.extract_properties(entity, graph)
             
+            # Extract label using improved method
+            label = self.extract_label_from_properties(properties)
+            if not label:
+                label = self.extract_local_name(uri_str)
+            
+            # Create searchable text
+            searchable_text = self.create_searchable_text(uri_str, label, properties, node_types)
+            
+            # Generate embedding
+            embedding = None
+            if self.use_embeddings and searchable_text:
+                embedding = self.generate_embedding(searchable_text)
+                if embedding:
+                    embeddings_generated += 1
+            
             node_doc = {
                 "uri": uri_str,
                 "local_name": self.extract_local_name(uri_str),
+                "label": label,
+                "searchable_text": searchable_text,
                 "type": node_types,
                 "properties": properties,
                 "source_video": [video_id],  # Always store as array for consistency
@@ -300,19 +489,9 @@ class RDFToMongoLoader:
                 "updated_at": datetime.now(timezone.utc)
             }
             
-            # Extract label for better searchability
-            label = None
-            schema_name_uri = "http://schema.org/name"
-            if str(RDFS.label) in properties:
-                label = properties[str(RDFS.label)]
-            elif str(FOAF.name) in properties:
-                label = properties[str(FOAF.name)]
-            elif schema_name_uri in properties:
-                label = properties[schema_name_uri]
-            else:
-                label = self.extract_local_name(uri_str)
-            
-            node_doc["label"] = label
+            # Add embedding if generated
+            if embedding:
+                node_doc["embedding"] = embedding
             
             try:
                 self.nodes.insert_one(node_doc)
@@ -326,33 +505,45 @@ class RDFToMongoLoader:
                     if video_id not in existing_videos:
                         existing_videos.append(video_id)
                     
+                    update_doc = {
+                        "properties": properties,
+                        "label": label,
+                        "searchable_text": searchable_text,
+                        "updated_at": datetime.now(timezone.utc),
+                        "source_video": existing_videos
+                    }
+                    
+                    if embedding:
+                        update_doc["embedding"] = embedding
+                    
                     self.nodes.update_one(
                         {"uri": uri_str},
-                        {
-                            "$set": {
-                                "properties": properties,
-                                "label": label,  # Update label too
-                                "updated_at": datetime.now(timezone.utc),
-                                "source_video": existing_videos
-                            }
-                        }
+                        {"$set": update_doc}
                     )
                 else:
                     # Normal update with array
+                    update_doc = {
+                        "properties": properties,
+                        "label": label,
+                        "searchable_text": searchable_text,
+                        "updated_at": datetime.now(timezone.utc)
+                    }
+                    
+                    if embedding:
+                        update_doc["embedding"] = embedding
+                    
                     self.nodes.update_one(
                         {"uri": uri_str},
                         {
-                            "$set": {
-                                "properties": properties,
-                                "label": label,  # Update label too
-                                "updated_at": datetime.now(timezone.utc)
-                            },
+                            "$set": update_doc,
                             "$addToSet": {"source_video": video_id}
                         }
                     )
                 nodes_updated += 1
         
         print(f"✅ Processed nodes: {nodes_added} added, {nodes_updated} updated")
+        if self.use_embeddings:
+            print(f"   Vector embeddings: {embeddings_generated} generated")
     
     def process_edges(self, graph: Graph, video_id: str):
         """Extract and save all edges from the RDF graph."""
@@ -529,34 +720,38 @@ class RDFToMongoLoader:
     
     def get_stats(self) -> Dict[str, int]:
         """Get statistics about the loaded graph."""
-        return {
+        stats = {
             "nodes": self.nodes.count_documents({}),
             "edges": self.edges.count_documents({}),
             "statements": self.statements.count_documents({}),
             "videos": self.videos.count_documents({})
         }
+        
+        if self.use_embeddings:
+            stats["nodes_with_embeddings"] = self.nodes.count_documents({"embedding": {"$exists": True}})
+        
+        return stats
 
 def main():
     """Main function to run the script."""
-    if len(sys.argv) != 2:
-        print("Usage: python rdf_to_mongodb.py <rdf_file.ttl>")
-        print("\nExample:")
-        print("python rdf_to_mongodb.py dR-eoAEvPH4.ttl")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Load RDF Turtle files into MongoDB with vector search support")
+    parser.add_argument("ttl_file", help="Path to the RDF Turtle file")
+    parser.add_argument("--skip-embeddings", action="store_true", 
+                        help="Skip generating vector embeddings (faster processing)")
     
-    ttl_file = sys.argv[1]
+    args = parser.parse_args()
     
     # Check if input file exists
-    if not Path(ttl_file).exists():
-        print(f"Error: Input file '{ttl_file}' does not exist.")
+    if not Path(args.ttl_file).exists():
+        print(f"Error: Input file '{args.ttl_file}' does not exist.")
         sys.exit(1)
     
     try:
         # Initialize loader
-        loader = RDFToMongoLoader()
+        loader = RDFToMongoLoader(use_embeddings=not args.skip_embeddings)
         
         # Process the TTL file
-        loader.process_ttl_file(ttl_file)
+        loader.process_ttl_file(args.ttl_file)
         
         # Show final statistics
         stats = loader.get_stats()
