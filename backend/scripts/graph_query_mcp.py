@@ -490,73 +490,87 @@ def get_querier() -> GraphQuerier:
     return _querier
 
 
-@mcp.tool()
-def query_parliamentary_graph(
-    query: str,
-    seed_nodes: int = 8,
-    hops: int = 2,
-    search_mode: str = "hybrid",
-    output_format: str = "summary",
-) -> dict:
-    """High-level search / traversal endpoint."""
-    seed_nodes = max(1, min(seed_nodes, 50))
-    hops = max(0, min(hops, 5))
-    search_mode = search_mode if search_mode in {"hybrid", "vector", "text"} else "hybrid"
-    output_format = output_format if output_format in {"summary", "turtle", "detailed"} else "summary"
-
-    logger.info(f"Query '{query}' ({search_mode}, hops={hops}, seeds={seed_nodes})")
-    q = get_querier()
-    sg = q.query_graph(query, hops, search_mode, seed_nodes)
-
-    stats = {
-        "initial_matches": len(sg["search_results"]),
-        "total_nodes": len(sg["nodes"]),
-        "total_edges": len(sg["edges"]),
-        "total_statements": len(sg["statements"]),
-    }
-
-    if output_format == "turtle":
-        return {
-            "query": query,
-            "format": "turtle",
-            "turtle": q.subgraph_to_turtle(sg),
-            "triple_count": len(q.subgraph_to_rdf_graph(sg)),
-            "statistics": stats,
-        }
-
-    if output_format == "detailed":
-        return {**sg, "statistics": stats, "query": query, "format": "detailed"}
-
-    # summary
-    top = [
-        {
-            "uri": r["uri"],
-            "label": r.get("label", r.get("local_name", "Unknown")),
-            "types": r.get("type", []),
-        }
-        for r in sg["search_results"][:5]
-    ]
-    return {
-        "query": query,
-        "format": "summary",
-        "statistics": stats,
-        "top_search_results": top,
-    }
-
+###############################################################################
+# FastMCP TOOLS – TURTLE-ONLY QUERYING
+###############################################################################
 
 @mcp.tool()
-def get_parliamentary_graph_turtle(
+def search_graph_turtle(
     query: str,
     seed_nodes: int = 8,
     hops: int = 2,
     search_mode: str = "hybrid",
 ) -> str:
-    """Convenience endpoint: always returns Turtle."""
-    sg = get_querier().query_graph(query, hops, search_mode, seed_nodes)
-    if not sg["nodes"]:
-        return f"# No results for '{query}'"
-    return get_querier().subgraph_to_turtle(sg)
+    """
+    search_graph_turtle
+    -------------------
+    Return an RDF/Turtle sub-graph for a *textual* query.
 
+    Parameters
+    ----------
+    query : str
+        Free-text search string (e.g. "Barbados Water Authority").
+    seed_nodes : int, optional
+        Number of top-ranked nodes to seed the traversal with (1-50, default 8).
+    hops : int, optional
+        How many relationship hops to follow from each seed (0-5, default 2).
+    search_mode : {"hybrid","vector","text"}, optional
+        Which underlying search engine to use (default "hybrid").
+
+    Returns
+    -------
+    str
+        Pure Turtle document.  No JSON metadata, no statistics.
+    """
+    seed_nodes = max(1, min(seed_nodes, 50))
+    hops = max(0, min(hops, 5))
+    if search_mode not in {"hybrid", "vector", "text"}:
+        search_mode = "hybrid"
+
+    q = get_querier()
+    sg = q.query_graph(query=query, hops=hops, search_mode=search_mode, limit=seed_nodes)
+
+    if not sg["nodes"]:
+        return f"# No results found for query: {query}\n"
+
+    return q.subgraph_to_turtle(sg)
+
+
+@mcp.tool()
+def expand_entity_turtle(
+    entity_uri: str,
+    hops: int = 1,
+) -> str:
+    """
+    expand_entity_turtle
+    --------------------
+    Given a *specific* entity URI, expand outward and export the neighbourhood
+    as Turtle.
+
+    Parameters
+    ----------
+    entity_uri : str
+        A full URI that is already present in the graph
+        (e.g. "http://example.com/barbados-parliament-ontology#Org_GovernmentOfBarbados").
+    hops : int, optional
+        How many relationship hops to traverse away from the entity (0-5, default 1).
+
+    Returns
+    -------
+    str
+        Turtle serialisation of the resulting sub-graph.
+    """
+    hops = max(0, min(hops, 5))
+    q = get_querier()
+
+    # Collect neighbourhood URIs and build sub-graph
+    uris = q.get_connected_nodes({entity_uri}, hops)
+    sg = q.get_subgraph(uris)
+
+    if not sg["nodes"]:
+        return f"# No data found for entity: <{entity_uri}>\n"
+
+    return q.subgraph_to_turtle(sg)
 
 @mcp.tool()
 def get_graph_statistics() -> dict:
