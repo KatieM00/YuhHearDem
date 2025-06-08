@@ -46,15 +46,22 @@ export const parseYouTubeUrl = (url: string): { videoId: string; timestamp: numb
 const extractVideoId = (url: string): string => {
   // Handle various YouTube URL formats
   const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
-    /youtube\.com\/v\/([^&\n?#]+)/
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
+    /youtube\.com\/v\/([a-zA-Z0-9_-]{11})/,
+    /youtube\.com\/watch\?.*v=([a-zA-Z0-9_-]{11})/
   ];
   
   for (const pattern of patterns) {
     const match = url.match(pattern);
-    if (match) {
+    if (match && match[1]) {
       return match[1];
     }
+  }
+  
+  // If no match found, try to extract 11-character alphanumeric string
+  const fallbackMatch = url.match(/([a-zA-Z0-9_-]{11})/);
+  if (fallbackMatch) {
+    return fallbackMatch[1];
   }
   
   // Fallback to default video if parsing fails
@@ -62,16 +69,18 @@ const extractVideoId = (url: string): string => {
 };
 
 const extractTimestamp = (url: string): number => {
-  // Extract timestamp from URL (t=123s or &t=123)
-  const timestampMatch = url.match(/[?&]t=(\d+)/);
-  if (timestampMatch) {
-    return parseInt(timestampMatch[1], 10);
-  }
+  // Extract timestamp from URL (t=123s, &t=123, or #t=123)
+  const patterns = [
+    /[?&]t=(\d+)s?/,
+    /#t=(\d+)s?/,
+    /&t=(\d+)s?/
+  ];
   
-  // Extract from #t= format
-  const hashMatch = url.match(/#t=(\d+)/);
-  if (hashMatch) {
-    return parseInt(hashMatch[1], 10);
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match && match[1]) {
+      return parseInt(match[1], 10);
+    }
   }
   
   return 0;

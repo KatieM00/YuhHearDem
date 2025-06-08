@@ -13,20 +13,29 @@ const VideoPlayer: React.FC = () => {
     return `${minutes}:${remainingSeconds < 10 ? '0' : ''}${remainingSeconds}`;
   };
 
-  // Construct the YouTube embed URL properly
-  const embedUrl = `https://www.youtube.com/embed/${currentVideo.id}?start=${currentVideo.startTime || 0}&autoplay=1`;
+  // Construct the YouTube embed URL properly with better error handling
+  const constructEmbedUrl = (videoId: string, startTime: number = 0): string => {
+    // Ensure videoId is valid (11 characters, alphanumeric + _ -)
+    const cleanVideoId = videoId.match(/^[a-zA-Z0-9_-]{11}$/) ? videoId : 'dQw4w9WgXcQ';
+    const cleanStartTime = Math.max(0, Math.floor(startTime));
+    
+    return `https://www.youtube.com/embed/${cleanVideoId}?start=${cleanStartTime}&autoplay=1&rel=0`;
+  };
+
+  const embedUrl = constructEmbedUrl(currentVideo.id, currentVideo.startTime);
 
   return (
     <div className="space-y-4 animate-fadeIn">
       <div className="relative w-full h-64 md:h-80 bg-black rounded-2xl overflow-hidden shadow-lg">
         <iframe 
+          key={`${currentVideo.id}-${currentVideo.startTime}`}
           width="100%" 
           height="100%" 
           src={embedUrl}
           title={currentVideo.title}
           className="w-full h-full"
           frameBorder="0"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
           allowFullScreen
         ></iframe>
         
