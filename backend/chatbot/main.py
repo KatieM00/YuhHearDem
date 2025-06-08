@@ -16,14 +16,14 @@ SAMPLE_RESPONSES = [
         "provenance": [
             {
                 "claim": "The 2024 Budget allocated $2.8 billion for healthcare improvements",
-                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=1247s",
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=30s",
                 "description": "Budget Debate 2024 - Health Ministry Allocation",
                 "session_date": "2024-03-15",
                 "confidence": 0.95
             },
             {
                 "claim": "plans to reduce waiting times and improve emergency services",
-                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=1456s", 
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=20s", 
                 "description": "Minister of Health - QEH Improvement Plans",
                 "session_date": "2024-03-15",
                 "confidence": 0.88
@@ -35,14 +35,14 @@ SAMPLE_RESPONSES = [
         "provenance": [
             {
                 "claim": "Tourism Recovery Act was passed with bipartisan support",
-                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=892s",
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=10s",
                 "description": "Parliamentary Session - Tourism Recovery Bill Final Reading",
                 "session_date": "2024-02-28",
                 "confidence": 0.92
             },
             {
                 "claim": "establishing a $50 million fund to support local tourism businesses",
-                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=1124s",
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=80s",
                 "description": "Tourism Minister - Recovery Fund Details",
                 "session_date": "2024-02-28",
                 "confidence": 0.91
@@ -54,14 +54,14 @@ SAMPLE_RESPONSES = [
         "provenance": [
             {
                 "claim": "Education Reform Bill introduced mandatory digital literacy programs",
-                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=678s",
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=20s",
                 "description": "Education Reform Debate - Digital Literacy Mandate",
                 "session_date": "2024-01-20",
                 "confidence": 0.94
             },
             {
                 "claim": "ensure equal access to technology education",
-                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=789s",
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=70s",
                 "description": "Prime Minister's Address - Education Equality",
                 "session_date": "2024-01-20",
                 "confidence": 0.87
@@ -73,14 +73,14 @@ SAMPLE_RESPONSES = [
         "provenance": [
             {
                 "claim": "Climate Resilience Infrastructure Project received approval for $150 million",
-                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=445s",
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=44s",
                 "description": "Infrastructure Committee - Climate Project Approval",
                 "session_date": "2024-04-10",
                 "confidence": 0.96
             },
             {
                 "claim": "upgrading drainage systems, strengthening coastal defenses",
-                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=567s",
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=56s",
                 "description": "Public Works Minister - Infrastructure Details",
                 "session_date": "2024-04-10",
                 "confidence": 0.89
@@ -92,14 +92,14 @@ SAMPLE_RESPONSES = [
         "provenance": [
             {
                 "claim": "Small Business Support Amendment increased maximum loan from $25,000 to $75,000",
-                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=334s",
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=33s",
                 "description": "Commerce Committee - Small Business Loan Amendment",
                 "session_date": "2024-03-22",
                 "confidence": 0.93
             },
             {
                 "claim": "help more Barbadians start and expand their businesses",
-                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=412s",
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=41s",
                 "description": "Minister of Commerce - Entrepreneurship Support",
                 "session_date": "2024-03-22",
                 "confidence": 0.85

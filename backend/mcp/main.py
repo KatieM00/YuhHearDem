@@ -6,7 +6,7 @@ Parliamentary Graph Query MCP Server with SSE Transport
 A FastMCP tool-server that exposes search / traversal / export utilities
 for a MongoDB-backed RDF-style graph of Barbados-Parliament data.
 
-Only structural / syntax fixes were made—behaviour is unchanged.
+Cloud Run compatible version with CORS support and health endpoints.
 """
 
 import os
@@ -609,15 +609,23 @@ def health_check() -> dict:
 #                              ENTRY  POINT                                   #
 # --------------------------------------------------------------------------- #
 if __name__ == "__main__":
-    host = os.getenv("MCP_HOST", "0.0.0.0")
-    port = int(os.getenv("MCP_PORT", "8001"))
+    # Cloud Run sets PORT environment variable
+    port = int(os.getenv("PORT", "8080"))
+    host = "0.0.0.0"
 
-    logger.info("🚀  Starting Parliamentary Graph Query MCP Server")
+    logger.info("🚀  Starting Parliamentary Graph Query MCP Server for Cloud Run")
     logger.info(f"📍  http://{host}:{port}")
 
     try:
-        _ = get_querier()  # early DB check
-        mcp.run(transport="sse", host=host, port=port)
+        # Test DB connection early
+        _ = get_querier()
+        
+        # Run with SSE transport for public access
+        mcp.run(
+            transport="sse", 
+            host=host, 
+            port=port
+        )
     except Exception as exc:                   # pragma: no cover
         logger.error(f"❌  Failed to start server: {exc}", exc_info=True)
         sys.exit(1)
