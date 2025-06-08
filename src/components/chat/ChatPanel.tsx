@@ -18,8 +18,8 @@ const ChatPanel: React.FC = () => {
         </h2>
       </div>
 
-      {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto p-6 scroll-smooth" id="messages-container">
+      {/* Messages Area - Fixed height with internal scrolling */}
+      <div className="h-[450px] overflow-y-auto p-6 scroll-smooth" id="messages-container">
         {messages.length === 0 ? <StarterPrompts /> : <MessageList />}
         
         {/* Typing Indicator */}
