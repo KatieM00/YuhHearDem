@@ -203,7 +203,8 @@ class MongoDBGraphLoader:
     
     def get_videos_with_jsonld(self, limit: Optional[int] = None, video_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Get videos with JSON-LD data that haven't been processed into graph format yet.
+        Get videos with JSON-LD data that haven't been processed into graph format yet,
+        or that were processed with an older version of the loader.
         
         Args:
             limit: Maximum number of videos to process
@@ -212,10 +213,16 @@ class MongoDBGraphLoader:
         Returns:
             List of video documents with JSON-LD data
         """
-        # Build query
+        current_version = "mongodb_graph_loader_v2.0"
+        
+        # Build query to find videos that need (re)processing
         query = {
             "json_ld": {"$exists": True, "$ne": None},
-            "graph_processed": {"$ne": True}  # Only videos not yet processed into graph
+            "$or": [
+                {"graph_processed": {"$ne": True}},  # Never processed
+                {"graph_processing_version": {"$ne": current_version}},  # Wrong version
+                {"graph_processing_version": {"$exists": False}}  # No version recorded
+            ]
         }
         
         if video_id:
@@ -228,46 +235,142 @@ class MongoDBGraphLoader:
             "VideoURL": 1,
             "json_ld": 1,
             "rdf_triple_count": 1,
+            "graph_processed": 1,
+            "graph_processing_version": 1,
             "_id": 1
         }
         
         videos = list(self.videos_source.find(query, projection).limit(limit or 0))
         
+        # Count videos by processing status for better logging
+        if videos:
+            never_processed = len([v for v in videos if not v.get("graph_processed")])
+            wrong_version = len([v for v in videos if v.get("graph_processed") and 
+                               v.get("graph_processing_version") != current_version])
+            no_version = len([v for v in videos if v.get("graph_processed") and 
+                            not v.get("graph_processing_version")])
+            
+            print(f"Found {len(videos)} videos to process:")
+            if never_processed > 0:
+                print(f"  - {never_processed} never processed")
+            if wrong_version > 0:
+                print(f"  - {wrong_version} with outdated version")
+            if no_version > 0:
+                print(f"  - {no_version} missing version info")
+        
         if video_id and not videos:
-            print(f"No video found with ID: {video_id} or already processed")
-        else:
-            print(f"Found {len(videos)} videos with JSON-LD data to process into graph format")
+            print(f"No video found with ID: {video_id} or already processed with current version")
+        elif not video_id and not videos:
+            print("All videos with JSON-LD data are already processed with current version")
         
         return videos
     
-    def extract_local_name(self, uri_str: str) -> str:
-        """Extract local name from URI for labeling."""
-        if '#' in uri_str:
-            return uri_str.split('#')[-1]
-        elif '/' in uri_str:
-            return uri_str.split('/')[-1]
+    def expand_curie(self, curie: str, context: Dict[str, Any]) -> str:
+        """
+        Expand a CURIE (Compact URI) to a full IRI using the JSON-LD context.
+        
+        Args:
+            curie: The compact URI to expand (e.g., "bbp:Program_DigitalMedia")
+            context: The JSON-LD @context dictionary
+            
+        Returns:
+            Expanded IRI or original string if not expandable
+        """
+        if not curie or not isinstance(curie, str):
+            return curie
+        
+        # Already a full IRI
+        if curie.startswith(("http://", "https://")):
+            return curie
+        
+        # Blank node
+        if curie.startswith("_:"):
+            return curie
+        
+        # Check if it contains a colon (potential CURIE)
+        if ":" in curie:
+            prefix, local_part = curie.split(":", 1)
+            
+            # Look up prefix in context
+            if prefix in context:
+                base_iri = context[prefix]
+                
+                # Handle different context value types
+                if isinstance(base_iri, str):
+                    # Simple string mapping
+                    if base_iri.endswith(("#", "/")):
+                        return base_iri + local_part
+                    else:
+                        return base_iri + local_part
+                elif isinstance(base_iri, dict):
+                    # Complex context object
+                    if "@id" in base_iri:
+                        base = base_iri["@id"]
+                        if base.endswith(("#", "/")):
+                            return base + local_part
+                        else:
+                            return base + local_part
+        
+        # If we can't expand it, return as-is
+        return curie
+    
+    def expand_value_recursively(self, value: Any, context: Dict[str, Any]) -> Any:
+        """
+        Recursively expand CURIEs in a value structure.
+        
+        Args:
+            value: Value to expand (can be string, dict, list, etc.)
+            context: JSON-LD context for expansion
+            
+        Returns:
+            Value with CURIEs expanded
+        """
+        if isinstance(value, str):
+            return self.expand_curie(value, context)
+        elif isinstance(value, dict):
+            if "@id" in value:
+                # This is a reference object
+                expanded_id = self.expand_curie(value["@id"], context)
+                result = dict(value)
+                result["@id"] = expanded_id
+                return result
+            else:
+                # Regular object, expand all values
+                return {k: self.expand_value_recursively(v, context) for k, v in value.items()}
+        elif isinstance(value, list):
+            return [self.expand_value_recursively(item, context) for item in value]
         else:
-            return uri_str
+            return value
+    
+    def extract_local_name_from_iri(self, iri: str) -> str:
+        """Extract local name from a full IRI for display purposes."""
+        if '#' in iri:
+            return iri.split('#')[-1]
+        elif '/' in iri:
+            return iri.split('/')[-1]
+        else:
+            return iri
     
     def extract_label_from_properties(self, node: Dict[str, Any]) -> Optional[str]:
         """
         Extract the best label from JSON-LD node properties.
         Priority order: schema:name, rdfs:label, foaf:name, dcterms:title, schema:title
         """
-        # Define common label/name/title properties in priority order
+        # Define common label/name/title properties in priority order (now with full IRIs)
         label_properties = [
-            "schema:name",
             "http://schema.org/name",
-            "rdfs:label",
             "http://www.w3.org/2000/01/rdf-schema#label",
-            "foaf:name", 
             "http://xmlns.com/foaf/0.1/name",
-            "dcterms:title",
             "http://purl.org/dc/terms/title",
-            "schema:title",
             "http://schema.org/title",
-            "skos:prefLabel",
             "http://www.w3.org/2004/02/skos/core#prefLabel",
+            # Keep compact forms as fallback
+            "schema:name",
+            "rdfs:label",
+            "foaf:name",
+            "dcterms:title",
+            "schema:title",
+            "skos:prefLabel",
         ]
         
         for prop in label_properties:
@@ -295,9 +398,9 @@ class MongoDBGraphLoader:
         if label:
             text_parts.append(label)
         
-        # Add local name from URI (if different from label)
+        # Add local name from IRI (if different from label)
         if uri_str:
-            local_name = self.extract_local_name(uri_str)
+            local_name = self.extract_local_name_from_iri(uri_str)
             if local_name and local_name != label:
                 # Convert camelCase to readable text
                 readable_local = re.sub(r'([a-z])([A-Z])', r'\1 \2', local_name)
@@ -305,13 +408,21 @@ class MongoDBGraphLoader:
         
         # Add all name/title/label properties from the JSON-LD
         name_properties = [
-            "schema:name", "http://schema.org/name",
-            "schema:title", "http://schema.org/title",
-            "rdfs:label", "http://www.w3.org/2000/01/rdf-schema#label",
-            "foaf:name", "http://xmlns.com/foaf/0.1/name",
-            "dcterms:title", "http://purl.org/dc/terms/title",
-            "skos:prefLabel", "http://www.w3.org/2004/02/skos/core#prefLabel",
-            "bbp:hasRole", "http://example.com/barbados-parliament-ontology#hasRole"
+            "http://schema.org/name",
+            "http://schema.org/title",
+            "http://www.w3.org/2000/01/rdf-schema#label",
+            "http://xmlns.com/foaf/0.1/name",
+            "http://purl.org/dc/terms/title",
+            "http://www.w3.org/2004/02/skos/core#prefLabel",
+            "http://example.com/barbados-parliament-ontology#hasRole",
+            # Compact forms as fallback
+            "schema:name",
+            "schema:title",
+            "rdfs:label",
+            "foaf:name",
+            "dcterms:title",
+            "skos:prefLabel",
+            "bbp:hasRole"
         ]
         
         for prop in name_properties:
@@ -332,9 +443,13 @@ class MongoDBGraphLoader:
         
         # Add descriptive properties
         descriptive_properties = [
-            "schema:description", "http://schema.org/description",
-            "dcterms:description", "http://purl.org/dc/terms/description",
-            "rdfs:comment", "http://www.w3.org/2000/01/rdf-schema#comment"
+            "http://schema.org/description",
+            "http://purl.org/dc/terms/description",
+            "http://www.w3.org/2000/01/rdf-schema#comment",
+            # Compact forms as fallback
+            "schema:description",
+            "dcterms:description",
+            "rdfs:comment"
         ]
         
         for prop in descriptive_properties:
@@ -355,7 +470,7 @@ class MongoDBGraphLoader:
         
         # Add readable type names (but not generic ones)
         for node_type in node_types:
-            type_name = self.extract_local_name(node_type)
+            type_name = self.extract_local_name_from_iri(node_type)
             if type_name and type_name not in ['Entity', 'Thing']:
                 # Convert camelCase to readable text
                 readable_type = re.sub(r'([a-z])([A-Z])', r'\1 \2', type_name)
@@ -423,35 +538,41 @@ class MongoDBGraphLoader:
         
         return types
     
-    def extract_properties_from_jsonld_node(self, node: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract properties from JSON-LD node, excluding @id and @type."""
+    def extract_properties_from_jsonld_node(self, node: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract properties from JSON-LD node, excluding @id and @type, and expand CURIEs."""
         properties = {}
         
         for key, value in node.items():
             if key.startswith("@"):  # Skip @id, @type, @context, etc.
                 continue
             
+            # Expand the property key
+            expanded_key = self.expand_curie(key, context)
+            
+            # Expand the value recursively
+            expanded_value = self.expand_value_recursively(value, context)
+            
             # Handle different value formats
-            if isinstance(value, dict) and "@id" in value:
+            if isinstance(expanded_value, dict) and "@id" in expanded_value:
                 # Reference to another entity
-                properties[key] = value["@id"]
-            elif isinstance(value, dict) and "@value" in value:
+                properties[expanded_key] = expanded_value["@id"]
+            elif isinstance(expanded_value, dict) and "@value" in expanded_value:
                 # Typed literal
-                properties[key] = value["@value"]
-            elif isinstance(value, list):
+                properties[expanded_key] = expanded_value["@value"]
+            elif isinstance(expanded_value, list):
                 # Array of values
                 processed_values = []
-                for v in value:
+                for v in expanded_value:
                     if isinstance(v, dict) and "@id" in v:
                         processed_values.append(v["@id"])
                     elif isinstance(v, dict) and "@value" in v:
                         processed_values.append(v["@value"])
                     else:
                         processed_values.append(v)
-                properties[key] = processed_values if len(processed_values) > 1 else processed_values[0]
+                properties[expanded_key] = processed_values if len(processed_values) > 1 else processed_values[0]
             else:
                 # Direct value
-                properties[key] = value
+                properties[expanded_key] = expanded_value
         
         return properties
     
@@ -460,6 +581,63 @@ class MongoDBGraphLoader:
         content = f"{subject}|{predicate}|{object_val}"
         return hashlib.md5(content.encode()).hexdigest()
     
+    def safe_float_conversion(self, value, default=0.0) -> float:
+        """
+        Safely convert a value to float, handling empty strings and None values.
+        
+        Args:
+            value: The value to convert to float
+            default: Default value to return if conversion fails
+            
+        Returns:
+            float: Converted value or default
+        """
+        if value is None:
+            return default
+        
+        if isinstance(value, (int, float)):
+            return float(value)
+        
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:  # Empty string
+                return default
+            try:
+                return float(value)
+            except ValueError:
+                return default
+        
+        return default
+    
+    def cleanup_old_graph_data(self, video_id: str) -> bool:
+        """
+        Clean up old graph data for a video before reprocessing.
+        
+        Args:
+            video_id: The video ID to clean up data for
+            
+        Returns:
+            True if cleanup was successful, False otherwise
+        """
+        try:
+            # Remove old nodes for this video
+            nodes_result = self.nodes.delete_many({"source_video": video_id})
+            
+            # Remove old edges for this video
+            edges_result = self.edges.delete_many({"source_video": video_id})
+            
+            # Remove old statements for this video
+            statements_result = self.statements.delete_many({"source_video": video_id})
+            
+            print(f"    🧹 Cleaned up old data: {nodes_result.deleted_count} nodes, "
+                  f"{edges_result.deleted_count} edges, {statements_result.deleted_count} statements")
+            
+            return True
+            
+        except Exception as e:
+            print(f"    ⚠️  Failed to cleanup old data: {e}")
+            return False
+
     def process_jsonld_to_graph(self, json_ld: Dict[str, Any], video_id: str, video_title: str):
         """Process JSON-LD data and save to graph collections."""
         print(f"  📊 Processing JSON-LD graph data...")
@@ -468,8 +646,14 @@ class MongoDBGraphLoader:
             print("  ⚠️  No @graph found in JSON-LD")
             return
         
+        # Extract context for CURIE expansion
+        context = json_ld.get("@context", {})
+        if not isinstance(context, dict):
+            context = {}
+        
         graph_items = json_ld["@graph"]
         print(f"  📋 Found {len(graph_items)} graph items")
+        print(f"  🔗 Context prefixes: {list(context.keys())}")
         
         nodes_added = 0
         nodes_updated = 0
@@ -495,14 +679,15 @@ class MongoDBGraphLoader:
             if "@id" not in node:
                 continue
             
-            uri_str = node["@id"]
-            node_types = self.get_node_types(node)
-            properties = self.extract_properties_from_jsonld_node(node)
+            # Expand the URI
+            uri_str = self.expand_curie(node["@id"], context)
+            node_types = [self.expand_curie(t, context) for t in self.get_node_types(node)]
+            properties = self.extract_properties_from_jsonld_node(node, context)
             
             # Extract label
             label = self.extract_label_from_properties(node)
             if not label:
-                label = self.extract_local_name(uri_str)
+                label = self.extract_local_name_from_iri(uri_str)
             
             # Create searchable text
             searchable_text = self.create_searchable_text(node, node_types)
@@ -516,7 +701,6 @@ class MongoDBGraphLoader:
             
             node_doc = {
                 "uri": uri_str,
-                "local_name": self.extract_local_name(uri_str),
                 "label": label,
                 "searchable_text": searchable_text,
                 "type": node_types,
@@ -557,7 +741,7 @@ class MongoDBGraphLoader:
             
             # Create edges for this node's properties
             for prop_key, prop_value in properties.items():
-                if isinstance(prop_value, str) and prop_value.startswith(("http://", "https://", "bbp:", "sess:")):
+                if isinstance(prop_value, str) and prop_value.startswith(("http://", "https://", "_:")):
                     # This is likely a reference to another entity
                     edge_doc = {
                         "subject": uri_str,
@@ -579,10 +763,15 @@ class MongoDBGraphLoader:
             if "@id" not in stmt:
                 continue
             
-            # Extract statement components
+            # Extract statement components and expand CURIEs
             subject = stmt.get("rdf:subject", {}).get("@id") if isinstance(stmt.get("rdf:subject"), dict) else stmt.get("rdf:subject")
             predicate = stmt.get("rdf:predicate", {}).get("@id") if isinstance(stmt.get("rdf:predicate"), dict) else stmt.get("rdf:predicate")
             object_val = stmt.get("rdf:object")
+            
+            if subject:
+                subject = self.expand_curie(subject, context)
+            if predicate:
+                predicate = self.expand_curie(predicate, context)
             
             if not (subject and predicate and object_val):
                 continue
@@ -592,7 +781,7 @@ class MongoDBGraphLoader:
             statement_doc = {
                 "statement_id": statement_id,
                 "global_statement_id": f"{video_id}_{statement_id}",
-                "statement_uri": stmt["@id"],
+                "statement_uri": self.expand_curie(stmt["@id"], context),
                 "subject": subject,
                 "predicate": predicate,
                 "object": str(object_val),
@@ -601,14 +790,231 @@ class MongoDBGraphLoader:
                 "created_at": datetime.now(timezone.utc)
             }
             
-            # Extract provenance information
+            # Extract provenance information with safe float conversion
             provenance = stmt.get("prov:wasDerivedFrom")
             if provenance:
                 if isinstance(provenance, dict):
+                    # Safely extract from_video
+                    from_video = provenance.get("bbp:fromVideo")
+                    if isinstance(from_video, dict):
+                        from_video = from_video.get("@id")
+                    if from_video:
+                        from_video = self.expand_curie(from_video, context)
+                    
+                    # Safely extract start_offset
+                    start_offset_data = provenance.get("bbp:startTimeOffset")
+                    if isinstance(start_offset_data, dict):
+                        start_offset = self.safe_float_conversion(start_offset_data.get("@value", 0))
+                    else:
+                        start_offset = self.safe_float_conversion(start_offset_data)
+                    
+                    # Safely extract end_offset
+                    end_offset_data = provenance.get("bbp:endTimeOffset")
+                    if isinstance(end_offset_data, dict):
+                        end_offset = self.safe_float_conversion(end_offset_data.get("@value", 0))
+                    else:
+                        end_offset = self.safe_float_conversion(end_offset_data)
+                    
                     statement_doc.update({
-                        "from_video": provenance.get("bbp:fromVideo", {}).get("@id") if isinstance(provenance.get("bbp:fromVideo"), dict) else provenance.get("bbp:fromVideo"),
-                        "start_offset": float(provenance.get("bbp:startTimeOffset", {}).get("@value", 0)) if isinstance(provenance.get("bbp:startTimeOffset"), dict) else provenance.get("bbp:startTimeOffset"),
-                        "end_offset": float(provenance.get("bbp:endTimeOffset", {}).get("@value", 0)) if isinstance(provenance.get("bbp:endTimeOffset"), dict) else provenance.get("bbp:endTimeOffset"),
+                        "from_video": from_video,
+                        "start_offset": start_offset,
+                        "end_offset": end_offset,
+                        "transcript_text": provenance.get("bbp:transcriptText"),
+                        "segment_type": provenance.get("@type")
+                    })
+            
+            try:
+                self.statements.insert_one(statement_doc)
+                statements_added += 1
+            except DuplicateKeyError:
+                pass  # Skip duplicates
+        
+        print(f"  ✅ Graph processing complete:")
+        print(f"    - Nodes: {nodes_added} added, {nodes_updated} updated")
+        print(f"    - Edges: {edges_added} added")
+        print(f"    - Statements: {statements_added} added")
+        if self.use_embeddings:
+            print(f"    - Embeddings: {embeddings_generated} generated")
+        """Process JSON-LD data and save to graph collections."""
+        print(f"  📊 Processing JSON-LD graph data...")
+        
+        if "@graph" not in json_ld:
+            print("  ⚠️  No @graph found in JSON-LD")
+            return
+        
+        # Extract context for CURIE expansion
+        context = json_ld.get("@context", {})
+        if not isinstance(context, dict):
+            context = {}
+        
+        graph_items = json_ld["@graph"]
+        print(f"  📋 Found {len(graph_items)} graph items")
+        print(f"  🔗 Context prefixes: {list(context.keys())}")
+        
+        nodes_added = 0
+        nodes_updated = 0
+        edges_added = 0
+        statements_added = 0
+        embeddings_generated = 0
+        
+        # Separate different types of items
+        entity_nodes = []
+        reified_statements = []
+        
+        for item in graph_items:
+            if item.get("@type") == "rdf:Statement":
+                reified_statements.append(item)
+            else:
+                entity_nodes.append(item)
+        
+        print(f"    - Entity nodes: {len(entity_nodes)}")
+        print(f"    - Reified statements: {len(reified_statements)}")
+        
+        # Process entity nodes
+        for node in entity_nodes:
+            if "@id" not in node:
+                continue
+            
+            # Expand the URI
+            uri_str = self.expand_curie(node["@id"], context)
+            node_types = [self.expand_curie(t, context) for t in self.get_node_types(node)]
+            properties = self.extract_properties_from_jsonld_node(node, context)
+            
+            # Extract label
+            label = self.extract_label_from_properties(node)
+            if not label:
+                label = self.extract_local_name_from_iri(uri_str)
+            
+            # Create searchable text
+            searchable_text = self.create_searchable_text(node, node_types)
+            
+            # Generate embedding
+            embedding = None
+            if self.use_embeddings and searchable_text:
+                embedding = self.generate_embedding(searchable_text)
+                if embedding:
+                    embeddings_generated += 1
+            
+            node_doc = {
+                "uri": uri_str,
+                "label": label,
+                "searchable_text": searchable_text,
+                "type": node_types,
+                "properties": properties,
+                "source_video": [video_id],
+                "video_title": video_title,
+                "created_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc)
+            }
+            
+            # Add embedding if generated
+            if embedding:
+                node_doc["embedding"] = embedding
+            
+            try:
+                self.nodes.insert_one(node_doc)
+                nodes_added += 1
+            except DuplicateKeyError:
+                # Update existing node
+                update_doc = {
+                    "properties": properties,
+                    "label": label,
+                    "searchable_text": searchable_text,
+                    "updated_at": datetime.now(timezone.utc)
+                }
+                
+                if embedding:
+                    update_doc["embedding"] = embedding
+                
+                self.nodes.update_one(
+                    {"uri": uri_str},
+                    {
+                        "$set": update_doc,
+                        "$addToSet": {"source_video": video_id}
+                    }
+                )
+                nodes_updated += 1
+            
+            # Create edges for this node's properties
+            for prop_key, prop_value in properties.items():
+                if isinstance(prop_value, str) and prop_value.startswith(("http://", "https://", "_:")):
+                    # This is likely a reference to another entity
+                    edge_doc = {
+                        "subject": uri_str,
+                        "predicate": prop_key,
+                        "object": prop_value,
+                        "source_video": [video_id],
+                        "video_title": video_title,
+                        "created_at": datetime.now(timezone.utc)
+                    }
+                    
+                    try:
+                        self.edges.insert_one(edge_doc)
+                        edges_added += 1
+                    except DuplicateKeyError:
+                        pass  # Skip duplicates
+        
+        # Process reified statements
+        for stmt in reified_statements:
+            if "@id" not in stmt:
+                continue
+            
+            # Extract statement components and expand CURIEs
+            subject = stmt.get("rdf:subject", {}).get("@id") if isinstance(stmt.get("rdf:subject"), dict) else stmt.get("rdf:subject")
+            predicate = stmt.get("rdf:predicate", {}).get("@id") if isinstance(stmt.get("rdf:predicate"), dict) else stmt.get("rdf:predicate")
+            object_val = stmt.get("rdf:object")
+            
+            if subject:
+                subject = self.expand_curie(subject, context)
+            if predicate:
+                predicate = self.expand_curie(predicate, context)
+            
+            if not (subject and predicate and object_val):
+                continue
+            
+            statement_id = self.create_statement_id(subject, predicate, str(object_val))
+            
+            statement_doc = {
+                "statement_id": statement_id,
+                "global_statement_id": f"{video_id}_{statement_id}",
+                "statement_uri": self.expand_curie(stmt["@id"], context),
+                "subject": subject,
+                "predicate": predicate,
+                "object": str(object_val),
+                "source_video": video_id,
+                "video_title": video_title,
+                "created_at": datetime.now(timezone.utc)
+            }
+            
+            # Extract provenance information with safe float conversion
+            provenance = stmt.get("prov:wasDerivedFrom")
+            if provenance:
+                if isinstance(provenance, dict):
+                    # Safely extract from_video
+                    from_video = provenance.get("bbp:fromVideo")
+                    if isinstance(from_video, dict):
+                        from_video = from_video.get("@id")
+                    if from_video:
+                        from_video = self.expand_curie(from_video, context)
+                    
+                    # Safely extract start_offset
+                    start_offset_data = provenance.get("bbp:startTimeOffset")
+                    if isinstance(start_offset_data, dict):
+                        start_offset = self.safe_float_conversion(start_offset_data.get("@value", 0))
+                    else:
+                        start_offset = self.safe_float_conversion(start_offset_data)
+                    
+                    # Safely extract end_offset
+                    end_offset_data = provenance.get("bbp:endTimeOffset")
+                    if isinstance(end_offset_data, dict):
+                        end_offset = self.safe_float_conversion(end_offset_data.get("@value", 0))
+                    else:
+                        end_offset = self.safe_float_conversion(end_offset_data)
+                    
+                    statement_doc.update({
+                        "from_video": from_video,
+                        "start_offset": start_offset,
+                        "end_offset": end_offset,
                         "transcript_text": provenance.get("bbp:transcriptText"),
                         "segment_type": provenance.get("@type")
                     })
@@ -635,7 +1041,7 @@ class MongoDBGraphLoader:
                     "$set": {
                         "graph_processed": True,
                         "graph_processed_at": datetime.now(timezone.utc),
-                        "graph_processing_version": "mongodb_graph_loader_v1.0"
+                        "graph_processing_version": "mongodb_graph_loader_v2.0"
                     }
                 }
             )
@@ -650,6 +1056,11 @@ class MongoDBGraphLoader:
         video_id = video_data["video_id"]
         video_title = video_data.get("Video_title", "Unknown Title")
         json_ld = video_data.get("json_ld")
+        current_version = "mongodb_graph_loader_v2.0"
+        
+        # Check if this is a reprocessing scenario
+        is_reprocessing = video_data.get("graph_processed", False) and \
+                         video_data.get("graph_processing_version") != current_version
         
         if not json_ld:
             print(f"  ⚠️  No JSON-LD data found for video {video_id}")
@@ -657,6 +1068,12 @@ class MongoDBGraphLoader:
         
         try:
             print(f"  📄 JSON-LD data: {len(str(json_ld))} characters")
+            
+            # Clean up old data if reprocessing
+            if is_reprocessing:
+                print(f"  🔄 Reprocessing due to version change")
+                if not self.cleanup_old_graph_data(video_id):
+                    print(f"  ⚠️  Cleanup failed, continuing anyway...")
             
             # Process JSON-LD into graph structure
             self.process_jsonld_to_graph(json_ld, video_id, video_title)
@@ -715,12 +1132,25 @@ class MongoDBGraphLoader:
     
     def get_stats(self) -> Dict[str, int]:
         """Get statistics about the loaded graph."""
+        current_version = "mongodb_graph_loader_v2.0"
+        
         stats = {
             "nodes": self.nodes.count_documents({}),
             "edges": self.edges.count_documents({}), 
             "statements": self.statements.count_documents({}),
             "videos_with_jsonld": self.videos_source.count_documents({"json_ld": {"$exists": True}}),
-            "videos_graph_processed": self.videos_source.count_documents({"graph_processed": True})
+            "videos_graph_processed": self.videos_source.count_documents({"graph_processed": True}),
+            "videos_current_version": self.videos_source.count_documents({
+                "graph_processed": True,
+                "graph_processing_version": current_version
+            }),
+            "videos_outdated_version": self.videos_source.count_documents({
+                "graph_processed": True,
+                "$or": [
+                    {"graph_processing_version": {"$ne": current_version}},
+                    {"graph_processing_version": {"$exists": False}}
+                ]
+            })
         }
         
         if self.use_embeddings:
