@@ -66,16 +66,40 @@ class GraphQuerier:
             connection_string or os.getenv("MONGODB_CONNECTION_STRING")
         )
         if not connection_string:
+            logger.error("❌ MONGODB_CONNECTION_STRING environment variable not set")
             raise ValueError(
                 "Set MONGODB_CONNECTION_STRING env var or pass connection_string."
             )
+        
+        # Log connection string info (without exposing the full string)
+        logger.info(f"📋 Connection string length: {len(connection_string)} characters")
+        logger.info(f"📋 Connection string starts with: {connection_string[:20]}...")
+        
+        if not connection_string.startswith(("mongodb://", "mongodb+srv://")):
+            logger.error(f"❌ Invalid MongoDB URI format. Got: {connection_string[:50]}...")
+            raise ValueError(f"Invalid MongoDB URI scheme. Expected mongodb:// or mongodb+srv://, got: {connection_string[:20]}...")
 
         try:
-            self.client = MongoClient(connection_string)
-            self.client.admin.command("ping")
+            # For MongoDB Atlas, we need to configure SSL/TLS properly
+            self.client = MongoClient(
+                connection_string,
+                tls=True,
+                tlsAllowInvalidCertificates=False,
+                serverSelectionTimeoutMS=10000,  # 10 second timeout
+                connectTimeoutMS=10000,
+                socketTimeoutMS=10000,
+                retryWrites=True,
+                w='majority'
+            )
+            # Test connection with a shorter timeout
+            self.client.admin.command("ping", maxTimeMS=5000)
             logger.info("✅  Connected to MongoDB")
         except ConnectionFailure as e:
+            logger.error(f"❌ MongoDB connection failed: {e}")
             raise ConnectionFailure(f"Cannot connect to MongoDB: {e}") from e
+        except Exception as e:
+            logger.error(f"❌ Unexpected MongoDB error: {e}")
+            raise ConnectionFailure(f"MongoDB connection error: {e}") from e
 
         self.db = self.client[database_name]
         self.nodes = self.db.nodes
@@ -488,6 +512,64 @@ def get_querier() -> GraphQuerier:
     if _querier is None:
         _querier = GraphQuerier()
     return _querier
+
+
+# --------------------------------------------------------------------------- #
+#                       HTTP HEALTH CHECK ENDPOINT                            #
+# --------------------------------------------------------------------------- #
+@mcp.get("/health")
+async def health_endpoint():
+    """
+    HTTP health check endpoint for Cloud Run.
+    Returns database statistics and connection status.
+    """
+    try:
+        q = get_querier()
+        
+        # Test MongoDB connection
+        q.client.admin.command("ping", maxTimeMS=2000)
+        
+        # Get basic statistics
+        stats = {
+            "nodes": q.nodes.count_documents({}),
+            "edges": q.edges.count_documents({}),
+            "statements": q.statements.count_documents({}),
+            "videos": q.videos.count_documents({})
+        }
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "database": "connected",
+            "statistics": stats,
+            "capabilities": {
+                "vector_search": VECTOR_SEARCH_AVAILABLE and q.embedding_model is not None,
+                "text_search": True
+            }
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": str(e),
+            "database": "disconnected"
+        }
+
+@mcp.get("/")
+async def root_endpoint():
+    """
+    Root endpoint with basic server information.
+    """
+    return {
+        "service": "Parliamentary Graph Query MCP Server",
+        "status": "running",
+        "endpoints": {
+            "health": "/health",
+            "mcp": "SSE transport on same port"
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
 
 
 ###############################################################################
