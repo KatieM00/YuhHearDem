@@ -213,7 +213,7 @@ class MongoDBGraphLoader:
         Returns:
             List of video documents with JSON-LD data
         """
-        current_version = "mongodb_graph_loader_v2.0"
+        current_version = "mongodb_graph_loader_v2.2"
         
         # Build query to find videos that need (re)processing
         query = {
@@ -739,14 +739,34 @@ class MongoDBGraphLoader:
                 )
                 nodes_updated += 1
             
-            # Create edges for this node's properties
+            # FIXED: Create edges for ALL properties, not just URI references
             for prop_key, prop_value in properties.items():
-                if isinstance(prop_value, str) and prop_value.startswith(("http://", "https://", "_:")):
-                    # This is likely a reference to another entity
+                # Skip @id and @type properties as these are handled specially
+                if prop_key in ["@id", "@type"]:
+                    continue
+                    
+                objects_to_process = []
+                
+                # Handle single values
+                if not isinstance(prop_value, list):
+                    objects_to_process = [prop_value]
+                else:
+                    # Handle arrays
+                    objects_to_process = prop_value
+                
+                # Create edges for all objects
+                for obj_value in objects_to_process:
+                    if obj_value is None or obj_value == "":
+                        continue
+                    
+                    # Determine object type and value
+                    object_type = "uri" if isinstance(obj_value, str) and obj_value.startswith(("http://", "https://", "_:")) else "literal"
+                    
                     edge_doc = {
                         "subject": uri_str,
                         "predicate": prop_key,
-                        "object": prop_value,
+                        "object": str(obj_value),
+                        "object_type": object_type,
                         "source_video": [video_id],
                         "video_title": video_title,
                         "created_at": datetime.now(timezone.utc)
@@ -756,9 +776,19 @@ class MongoDBGraphLoader:
                         self.edges.insert_one(edge_doc)
                         edges_added += 1
                     except DuplicateKeyError:
-                        pass  # Skip duplicates
+                        # Update existing edge to add this video as a source
+                        self.edges.update_one(
+                            {
+                                "subject": uri_str,
+                                "predicate": prop_key,
+                                "object": str(obj_value)
+                            },
+                            {
+                                "$addToSet": {"source_video": video_id}
+                            }
+                        )
         
-        # Process reified statements
+        # Process reified statements (unchanged)
         for stmt in reified_statements:
             if "@id" not in stmt:
                 continue
@@ -835,203 +865,7 @@ class MongoDBGraphLoader:
         print(f"    - Statements: {statements_added} added")
         if self.use_embeddings:
             print(f"    - Embeddings: {embeddings_generated} generated")
-        """Process JSON-LD data and save to graph collections."""
-        print(f"  📊 Processing JSON-LD graph data...")
         
-        if "@graph" not in json_ld:
-            print("  ⚠️  No @graph found in JSON-LD")
-            return
-        
-        # Extract context for CURIE expansion
-        context = json_ld.get("@context", {})
-        if not isinstance(context, dict):
-            context = {}
-        
-        graph_items = json_ld["@graph"]
-        print(f"  📋 Found {len(graph_items)} graph items")
-        print(f"  🔗 Context prefixes: {list(context.keys())}")
-        
-        nodes_added = 0
-        nodes_updated = 0
-        edges_added = 0
-        statements_added = 0
-        embeddings_generated = 0
-        
-        # Separate different types of items
-        entity_nodes = []
-        reified_statements = []
-        
-        for item in graph_items:
-            if item.get("@type") == "rdf:Statement":
-                reified_statements.append(item)
-            else:
-                entity_nodes.append(item)
-        
-        print(f"    - Entity nodes: {len(entity_nodes)}")
-        print(f"    - Reified statements: {len(reified_statements)}")
-        
-        # Process entity nodes
-        for node in entity_nodes:
-            if "@id" not in node:
-                continue
-            
-            # Expand the URI
-            uri_str = self.expand_curie(node["@id"], context)
-            node_types = [self.expand_curie(t, context) for t in self.get_node_types(node)]
-            properties = self.extract_properties_from_jsonld_node(node, context)
-            
-            # Extract label
-            label = self.extract_label_from_properties(node)
-            if not label:
-                label = self.extract_local_name_from_iri(uri_str)
-            
-            # Create searchable text
-            searchable_text = self.create_searchable_text(node, node_types)
-            
-            # Generate embedding
-            embedding = None
-            if self.use_embeddings and searchable_text:
-                embedding = self.generate_embedding(searchable_text)
-                if embedding:
-                    embeddings_generated += 1
-            
-            node_doc = {
-                "uri": uri_str,
-                "label": label,
-                "searchable_text": searchable_text,
-                "type": node_types,
-                "properties": properties,
-                "source_video": [video_id],
-                "video_title": video_title,
-                "created_at": datetime.now(timezone.utc),
-                "updated_at": datetime.now(timezone.utc)
-            }
-            
-            # Add embedding if generated
-            if embedding:
-                node_doc["embedding"] = embedding
-            
-            try:
-                self.nodes.insert_one(node_doc)
-                nodes_added += 1
-            except DuplicateKeyError:
-                # Update existing node
-                update_doc = {
-                    "properties": properties,
-                    "label": label,
-                    "searchable_text": searchable_text,
-                    "updated_at": datetime.now(timezone.utc)
-                }
-                
-                if embedding:
-                    update_doc["embedding"] = embedding
-                
-                self.nodes.update_one(
-                    {"uri": uri_str},
-                    {
-                        "$set": update_doc,
-                        "$addToSet": {"source_video": video_id}
-                    }
-                )
-                nodes_updated += 1
-            
-            # Create edges for this node's properties
-            for prop_key, prop_value in properties.items():
-                if isinstance(prop_value, str) and prop_value.startswith(("http://", "https://", "_:")):
-                    # This is likely a reference to another entity
-                    edge_doc = {
-                        "subject": uri_str,
-                        "predicate": prop_key,
-                        "object": prop_value,
-                        "source_video": [video_id],
-                        "video_title": video_title,
-                        "created_at": datetime.now(timezone.utc)
-                    }
-                    
-                    try:
-                        self.edges.insert_one(edge_doc)
-                        edges_added += 1
-                    except DuplicateKeyError:
-                        pass  # Skip duplicates
-        
-        # Process reified statements
-        for stmt in reified_statements:
-            if "@id" not in stmt:
-                continue
-            
-            # Extract statement components and expand CURIEs
-            subject = stmt.get("rdf:subject", {}).get("@id") if isinstance(stmt.get("rdf:subject"), dict) else stmt.get("rdf:subject")
-            predicate = stmt.get("rdf:predicate", {}).get("@id") if isinstance(stmt.get("rdf:predicate"), dict) else stmt.get("rdf:predicate")
-            object_val = stmt.get("rdf:object")
-            
-            if subject:
-                subject = self.expand_curie(subject, context)
-            if predicate:
-                predicate = self.expand_curie(predicate, context)
-            
-            if not (subject and predicate and object_val):
-                continue
-            
-            statement_id = self.create_statement_id(subject, predicate, str(object_val))
-            
-            statement_doc = {
-                "statement_id": statement_id,
-                "global_statement_id": f"{video_id}_{statement_id}",
-                "statement_uri": self.expand_curie(stmt["@id"], context),
-                "subject": subject,
-                "predicate": predicate,
-                "object": str(object_val),
-                "source_video": video_id,
-                "video_title": video_title,
-                "created_at": datetime.now(timezone.utc)
-            }
-            
-            # Extract provenance information with safe float conversion
-            provenance = stmt.get("prov:wasDerivedFrom")
-            if provenance:
-                if isinstance(provenance, dict):
-                    # Safely extract from_video
-                    from_video = provenance.get("bbp:fromVideo")
-                    if isinstance(from_video, dict):
-                        from_video = from_video.get("@id")
-                    if from_video:
-                        from_video = self.expand_curie(from_video, context)
-                    
-                    # Safely extract start_offset
-                    start_offset_data = provenance.get("bbp:startTimeOffset")
-                    if isinstance(start_offset_data, dict):
-                        start_offset = self.safe_float_conversion(start_offset_data.get("@value", 0))
-                    else:
-                        start_offset = self.safe_float_conversion(start_offset_data)
-                    
-                    # Safely extract end_offset
-                    end_offset_data = provenance.get("bbp:endTimeOffset")
-                    if isinstance(end_offset_data, dict):
-                        end_offset = self.safe_float_conversion(end_offset_data.get("@value", 0))
-                    else:
-                        end_offset = self.safe_float_conversion(end_offset_data)
-                    
-                    statement_doc.update({
-                        "from_video": from_video,
-                        "start_offset": start_offset,
-                        "end_offset": end_offset,
-                        "transcript_text": provenance.get("bbp:transcriptText"),
-                        "segment_type": provenance.get("@type")
-                    })
-            
-            try:
-                self.statements.insert_one(statement_doc)
-                statements_added += 1
-            except DuplicateKeyError:
-                pass  # Skip duplicates
-        
-        print(f"  ✅ Graph processing complete:")
-        print(f"    - Nodes: {nodes_added} added, {nodes_updated} updated")
-        print(f"    - Edges: {edges_added} added")
-        print(f"    - Statements: {statements_added} added")
-        if self.use_embeddings:
-            print(f"    - Embeddings: {embeddings_generated} generated")
-    
     def save_graph_video_metadata(self, video_data: Dict[str, Any]):
         """Mark video as processed by adding graph_processed flag."""
         try:
@@ -1041,7 +875,7 @@ class MongoDBGraphLoader:
                     "$set": {
                         "graph_processed": True,
                         "graph_processed_at": datetime.now(timezone.utc),
-                        "graph_processing_version": "mongodb_graph_loader_v2.0"
+                        "graph_processing_version": "mongodb_graph_loader_v2.2"
                     }
                 }
             )
@@ -1056,7 +890,7 @@ class MongoDBGraphLoader:
         video_id = video_data["video_id"]
         video_title = video_data.get("Video_title", "Unknown Title")
         json_ld = video_data.get("json_ld")
-        current_version = "mongodb_graph_loader_v2.0"
+        current_version = "mongodb_graph_loader_v2.2"
         
         # Check if this is a reprocessing scenario
         is_reprocessing = video_data.get("graph_processed", False) and \
@@ -1132,7 +966,7 @@ class MongoDBGraphLoader:
     
     def get_stats(self) -> Dict[str, int]:
         """Get statistics about the loaded graph."""
-        current_version = "mongodb_graph_loader_v2.0"
+        current_version = "mongodb_graph_loader_v2.2"
         
         stats = {
             "nodes": self.nodes.count_documents({}),
