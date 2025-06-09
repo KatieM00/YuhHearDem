@@ -6,7 +6,7 @@ Parliamentary Graph Query MCP Server with SSE Transport
 A FastMCP tool-server that exposes search / traversal / export utilities
 for a MongoDB-backed RDF-style graph of Barbados-Parliament data.
 
-Only structural / syntax fixes were made—behaviour is unchanged.
+Cloud Run compatible version with CORS support and health endpoints.
 """
 
 import os
@@ -89,7 +89,10 @@ class GraphQuerier:
                 connectTimeoutMS=10000,
                 socketTimeoutMS=10000,
                 retryWrites=True,
-                w='majority'
+                w='majority',
+                maxPoolSize=10,  # Limit connection pool size for Cloud Run
+                minPoolSize=1,
+                maxIdleTimeMS=30000,  # Close idle connections after 30s
             )
             # Test connection with a shorter timeout
             self.client.admin.command("ping", maxTimeMS=5000)
@@ -499,6 +502,11 @@ class GraphQuerier:
             logger.error(f"Turtle serialisation failed: {exc}")
             return header + "# <serialization-error>\n"
 
+    def close(self):
+        """Close MongoDB connection."""
+        if hasattr(self, 'client'):
+            self.client.close()
+
 
 # --------------------------------------------------------------------------- #
 #                       MCP TOOL  DEFINITIONS                                 #
@@ -604,18 +612,22 @@ def search_graph_turtle(
     str
         Pure Turtle document.  No JSON metadata, no statistics.
     """
-    seed_nodes = max(1, min(seed_nodes, 50))
-    hops = max(0, min(hops, 5))
-    if search_mode not in {"hybrid", "vector", "text"}:
-        search_mode = "hybrid"
+    try:
+        seed_nodes = max(1, min(seed_nodes, 50))
+        hops = max(0, min(hops, 5))
+        if search_mode not in {"hybrid", "vector", "text"}:
+            search_mode = "hybrid"
 
-    q = get_querier()
-    sg = q.query_graph(query=query, hops=hops, search_mode=search_mode, limit=seed_nodes)
+        q = get_querier()
+        sg = q.query_graph(query=query, hops=hops, search_mode=search_mode, limit=seed_nodes)
 
-    if not sg["nodes"]:
-        return f"# No results found for query: {query}\n"
+        if not sg["nodes"]:
+            return f"# No results found for query: {query}\n"
 
-    return q.subgraph_to_turtle(sg)
+        return q.subgraph_to_turtle(sg)
+    except Exception as e:
+        logger.error(f"Error in search_graph_turtle: {e}")
+        return f"# Error processing query '{query}': {str(e)}\n"
 
 
 @mcp.tool()
@@ -642,44 +654,54 @@ def expand_entity_turtle(
     str
         Turtle serialisation of the resulting sub-graph.
     """
-    hops = max(0, min(hops, 5))
-    q = get_querier()
+    try:
+        hops = max(0, min(hops, 5))
+        q = get_querier()
 
-    # Collect neighbourhood URIs and build sub-graph
-    uris = q.get_connected_nodes({entity_uri}, hops)
-    sg = q.get_subgraph(uris)
+        # Collect neighbourhood URIs and build sub-graph
+        uris = q.get_connected_nodes({entity_uri}, hops)
+        sg = q.get_subgraph(uris)
 
-    if not sg["nodes"]:
-        return f"# No data found for entity: <{entity_uri}>\n"
+        if not sg["nodes"]:
+            return f"# No data found for entity: <{entity_uri}>\n"
 
-    return q.subgraph_to_turtle(sg)
+        return q.subgraph_to_turtle(sg)
+    except Exception as e:
+        logger.error(f"Error in expand_entity_turtle: {e}")
+        return f"# Error expanding entity '{entity_uri}': {str(e)}\n"
 
 @mcp.tool()
 def get_graph_statistics() -> dict:
-    q = get_querier()
-    stats = {
-        "nodes": q.nodes.count_documents({}),
-        "edges": q.edges.count_documents({}),
-        "statements": q.statements.count_documents({}),
-        "videos": q.videos.count_documents({}),
-        "nodes_with_embeddings": q.nodes.count_documents({"embedding": {"$exists": True}}),
-    }
-    prov = q.statements.count_documents(
-        {"start_offset": {"$ne": None}, "end_offset": {"$ne": None}}
-    )
-    return {
-        "database_statistics": stats,
-        "capabilities": {
-            "vector_search": VECTOR_SEARCH_AVAILABLE and q.embedding_model is not None,
-            "hybrid_search": VECTOR_SEARCH_AVAILABLE and q.embedding_model is not None,
-            "text_search": True,
-            "provenance_available": prov > 0,
-        },
-    }
+    """Get database statistics and server capabilities."""
+    try:
+        q = get_querier()
+        stats = {
+            "nodes": q.nodes.count_documents({}),
+            "edges": q.edges.count_documents({}),
+            "statements": q.statements.count_documents({}),
+            "videos": q.videos.count_documents({}),
+            "nodes_with_embeddings": q.nodes.count_documents({"embedding": {"$exists": True}}),
+        }
+        prov = q.statements.count_documents(
+            {"start_offset": {"$ne": None}, "end_offset": {"$ne": None}}
+        )
+        return {
+            "database_statistics": stats,
+            "capabilities": {
+                "vector_search": VECTOR_SEARCH_AVAILABLE and q.embedding_model is not None,
+                "hybrid_search": VECTOR_SEARCH_AVAILABLE and q.embedding_model is not None,
+                "text_search": True,
+                "provenance_available": prov > 0,
+            },
+        }
+    except Exception as e:
+        logger.error(f"Error getting statistics: {e}")
+        return {"error": str(e), "status": "failed"}
 
 
 @mcp.tool()
 def health_check() -> dict:
+    """Check server and database health."""
     try:
         get_querier().client.admin.command("ping")
         return {"status": "healthy", "time": datetime.now(timezone.utc).isoformat()}
@@ -688,18 +710,48 @@ def health_check() -> dict:
 
 
 # --------------------------------------------------------------------------- #
+#                      GRACEFUL SHUTDOWN HANDLING                             #
+# --------------------------------------------------------------------------- #
+import signal
+import atexit
+
+def cleanup():
+    """Clean up resources on shutdown."""
+    global _querier
+    if _querier is not None:
+        logger.info("🧹 Cleaning up resources...")
+        _querier.close()
+        _querier = None
+
+# Register cleanup handlers
+atexit.register(cleanup)
+signal.signal(signal.SIGTERM, lambda s, f: cleanup())
+signal.signal(signal.SIGINT, lambda s, f: cleanup())
+
+# --------------------------------------------------------------------------- #
 #                              ENTRY  POINT                                   #
 # --------------------------------------------------------------------------- #
 if __name__ == "__main__":
-    host = os.getenv("MCP_HOST", "0.0.0.0")
-    port = int(os.getenv("MCP_PORT", "8001"))
+    # Cloud Run sets PORT environment variable
+    port = int(os.getenv("PORT", "8080"))
+    host = "0.0.0.0"
 
-    logger.info("🚀  Starting Parliamentary Graph Query MCP Server")
+    logger.info("🚀  Starting Parliamentary Graph Query MCP Server for Cloud Run")
     logger.info(f"📍  http://{host}:{port}")
 
     try:
-        _ = get_querier()  # early DB check
-        mcp.run(transport="sse", host=host, port=port)
+        # Test DB connection early
+        _ = get_querier()
+        
+        # Run with SSE transport for public access
+        mcp.run(
+            transport="sse", 
+            host=host, 
+            port=port,
+            # Add some additional configuration for robustness
+            log_level="info"
+        )
     except Exception as exc:                   # pragma: no cover
         logger.error(f"❌  Failed to start server: {exc}", exc_info=True)
+        cleanup()
         sys.exit(1)
