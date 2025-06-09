@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Set, Any, Optional
 import time
 import numpy as np
-from collections import defaultdict
+import time
 
 from bson import ObjectId
 
@@ -29,17 +29,22 @@ try:
     from rdflib import Graph, URIRef, Literal, BNode, Namespace
     from rdflib.namespace import RDF, RDFS, OWL, FOAF, XSD
     from fastmcp import FastMCP
+    from fastapi import HTTPException
+    from fastapi.responses import JSONResponse
+    from fastapi import Request
 except ImportError as e:
     print(f"Missing package: {e}")
     print("pip install fastmcp pymongo python-dotenv rdflib")
     sys.exit(1)
 
-# optional sentence-transformers
+# mandatory sentence-transformers
 try:
     from sentence_transformers import SentenceTransformer
-    VECTOR_SEARCH_AVAILABLE = True
-except ImportError:
-    VECTOR_SEARCH_AVAILABLE = False
+except ImportError as e:
+    print(f"❌ Missing required package: {e}")
+    print("Vector search is mandatory. Please install:")
+    print("pip install sentence-transformers")
+    sys.exit(1)
 
 # --------------------------------------------------------------------------- #
 #                               CONFIG / LOGGING                              #
@@ -111,18 +116,14 @@ class EnhancedGraphQuerier:
             raise ConnectionError(f"Failed to connect to MongoDB: {e}")
 
     def _initialize_embeddings(self):
-        """Initialize embedding model with timeout protection."""
-        if not VECTOR_SEARCH_AVAILABLE:
-            logger.info("📄 Vector search not available")
-            return
-            
+        """Initialize embedding model - mandatory for operation."""
         try:
             logger.info("🔄  Loading embedding model...")
             self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
             logger.info("✅  Vector search enabled")
         except Exception as e:
-            logger.warning(f"📄 Vector search disabled: {e}")
-            self.embedding_model = None
+            logger.error(f"❌ Failed to load embedding model: {e}")
+            raise RuntimeError(f"Vector search is mandatory but failed to initialize: {e}")
 
     def search_nodes(self, query: str, limit: int = 8) -> List[Dict]:
         """Standard vector-only search for backward compatibility."""
@@ -144,7 +145,7 @@ class EnhancedGraphQuerier:
             return []
 
     def hybrid_search(self, query: str, limit: int = 8, pagerank_weight: float = 0.3, 
-                     min_pagerank_score: float = 0.0001) -> List[Dict]:
+                     min_pagerank_score: float = 0.00001) -> List[Dict]:
         """
         Hybrid search combining PageRank importance with semantic similarity.
         
@@ -157,10 +158,6 @@ class EnhancedGraphQuerier:
         Returns:
             List of nodes ranked by hybrid score
         """
-        if not self.embedding_model:
-            logger.warning("📄 Embedding model not available, falling back to text search")
-            return self._fallback_text_search(query, limit)
-        
         try:
             logger.info(f"🎯 Hybrid search for: '{query}' (PageRank weight: {pagerank_weight:.1%})")
             
@@ -189,7 +186,7 @@ class EnhancedGraphQuerier:
                         # Normalize PageRank score (assuming max around 0.01 for typical graphs)
                         "normalized_pagerank": {
                             "$divide": [
-                                {"$ifNull": ["$pagerank_score", 0.0001]},
+                                {"$ifNull": ["$pagerank_score", 0.00001]},
                                 0.01  # Approximate max PageRank score
                             ]
                         }
@@ -262,7 +259,7 @@ class EnhancedGraphQuerier:
                 query, 
                 limit=limit * 2, 
                 pagerank_weight=0.7,  # Heavily favor PageRank
-                min_pagerank_score=0.0001
+                min_pagerank_score=0.00001
             )
             
             # Filter by rank and sort by authority
@@ -301,7 +298,7 @@ class EnhancedGraphQuerier:
                 query, 
                 limit=topic_expansion,
                 pagerank_weight=0.1,  # Favor similarity for topic definition
-                min_pagerank_score=0.0
+                min_pagerank_score=0.00001
             )
             
             if not topic_nodes:
@@ -435,9 +432,6 @@ class EnhancedGraphQuerier:
 
     def _vector_search_nodes(self, query: str, limit: int = 8) -> List[Dict]:
         """Vector search using sentence transformers."""
-        if not self.embedding_model:
-            return self._fallback_text_search(query, limit)
-
         try:
             # Generate query embedding
             query_embedding = self.embedding_model.encode(query).tolist()
@@ -462,38 +456,10 @@ class EnhancedGraphQuerier:
             
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
-            return self._fallback_text_search(query, limit)
+            raise RuntimeError(f"Vector search is mandatory but failed: {e}")
 
-    def _fallback_text_search(self, query: str, limit: int = 8) -> List[Dict]:
-        """Fallback text search when vector search is unavailable."""
-        try:
-            regex = re.compile(re.escape(query), re.IGNORECASE)
-            results = list(
-                self.nodes.find(
-                    {
-                        "$or": [
-                            {"label": {"$regex": regex}},
-                            {"local_name": {"$regex": regex}},
-                            {"searchable_text": {"$regex": regex}},
-                        ]
-                    },
-                    {"embedding": 0}
-                ).limit(limit)
-            )
-            
-            # Add PageRank boost to text search results
-            for result in results:
-                result["similarity_score"] = 1.0  # Dummy similarity for consistency
-                if "_id" in result:
-                    result["_id"] = str(result["_id"])
-            
-            # Sort by PageRank if available
-            results.sort(key=lambda x: x.get("pagerank_score", 0), reverse=True)
-            
-            return results
-        except Exception as e:
-            logger.error(f"Text search fallback failed: {e}")
-            return []
+        # Remove fallback text search methods since vector search is mandatory
+        # All search methods now depend on embeddings
 
     def get_connected_nodes(self, uris: Set[str], hops: int = 1) -> Set[str]:
         """Get nodes connected to the given URIs."""
@@ -639,6 +605,68 @@ mcp = FastMCP(
         "request_timeout": 120.0,
     }
 )
+
+# Add HTTP health check endpoint using FastMCP's custom_route
+@mcp.custom_route("/health", methods=["GET"])
+async def health_endpoint(request: Request) -> JSONResponse:
+    """
+    HTTP health check endpoint for Google Cloud Run and load balancers.
+    Returns 200 if database is responsive, 503 if not.
+    """
+    try:
+        # Get database connection
+        q = get_querier()
+        
+        # Test database connectivity with timeout
+        start_time = time.time()
+        q.client.admin.command("ping", maxTimeMS=3000)
+        response_time = (time.time() - start_time) * 1000  # Convert to ms
+        
+        # Quick database stats to verify collections are accessible
+        node_count = q.nodes.estimated_document_count()
+        edge_count = q.edges.estimated_document_count()
+        
+        health_data = {
+            "status": "healthy",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "database": {
+                "connected": True,
+                "response_time_ms": round(response_time, 2),
+                "collections_accessible": True,
+                "node_count": node_count,
+                "edge_count": edge_count
+            },
+            "services": {
+                "vector_search": True,  # Always true since it's mandatory
+                "pagerank": node_count > 0,  # Assume PageRank available if nodes exist
+                "hybrid_search": node_count > 0  # Always available when nodes exist
+            },
+            "version": "enhanced_v1.0"
+        }
+        
+        return JSONResponse(
+            status_code=200,
+            content=health_data
+        )
+        
+    except Exception as e:
+        # Log the error but don't expose internal details in response
+        logger.error(f"❌ Health check failed: {e}")
+        
+        error_data = {
+            "status": "unhealthy",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "database": {
+                "connected": False,
+                "error": "Database connectivity issue"
+            },
+            "message": "Service temporarily unavailable"
+        }
+        
+        return JSONResponse(
+            status_code=503,  # Service Unavailable
+            content=error_data
+        )
 
 @mcp.tool()
 def hybrid_search_turtle(query: str, hops: int = 1, limit: int = 5, 
@@ -956,18 +984,35 @@ def get_provenance(node_uris: str, include_transcript: bool = False) -> str:
 
 @mcp.tool()
 def health_check() -> str:
-    """Check server health."""
+    """Check server and database health - can be called via MCP or used for monitoring."""
     try:
         logger.info("🏥 Running health check")
         q = get_querier()
-        q.client.admin.command("ping", maxTimeMS=2000)
+        
+        # Test database connectivity with timeout
+        start_time = time.time()
+        q.client.admin.command("ping", maxTimeMS=3000)
+        response_time = (time.time() - start_time) * 1000
+        
+        # Quick database stats
+        node_count = q.nodes.estimated_document_count()
+        edge_count = q.edges.estimated_document_count()
         
         result = {
             "status": "healthy",
             "time": datetime.now(timezone.utc).isoformat(),
-            "database": "connected",
-            "vector_search": q.embedding_model is not None,
-            "hybrid_search_ready": q.embedding_model is not None
+            "database": {
+                "connected": True,
+                "response_time_ms": round(response_time, 2),
+                "node_count": node_count,
+                "edge_count": edge_count
+            },
+            "services": {
+                "vector_search": True,  # Always true since it's mandatory
+                "pagerank": node_count > 0,
+                "hybrid_search": node_count > 0
+            },
+            "version": "enhanced_v1.0"
         }
         
         logger.info("✅ Health check passed")
@@ -979,7 +1024,7 @@ def health_check() -> str:
             "status": "unhealthy", 
             "error": str(e),
             "time": datetime.now(timezone.utc).isoformat(),
-            "database": "disconnected"
+            "database": {"connected": False}
         })
 
 # --------------------------------------------------------------------------- #
@@ -1017,17 +1062,22 @@ async def initialize_with_retry(max_retries: int = 3, delay: float = 1.0):
                 raise
 
 if __name__ == "__main__":
+    # Get port from environment (Cloud Run compatibility)
     port = int(os.getenv("PORT", "8080"))
     host = "0.0.0.0"
     
     logger.info("🚀 Starting Enhanced Parliamentary Graph MCP Server")
     logger.info("🎯 Features: Hybrid Search, Authority Ranking, Topic-Specific PageRank")
     logger.info(f"📡 Server will run on {host}:{port}")
+    logger.info(f"🏥 Health check available at http://{host}:{port}/health")
     
     try:
+        # Initialize database connection with retries
         asyncio.run(initialize_with_retry())
-        logger.info("🌐 Starting enhanced server...")
         
+        logger.info("🌐 Starting enhanced MCP server...")
+        
+        # Use FastMCP's built-in server with custom health route
         mcp.run(
             transport="sse",
             host=host,
