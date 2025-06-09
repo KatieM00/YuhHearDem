@@ -7,6 +7,10 @@ interface AppContextType {
   currentVideo: Video | null;
   input: string;
   isTyping: boolean;
+  showMobileParliament: boolean;
+  showAboutModal: boolean;
+  setShowMobileParliament: (show: boolean) => void;
+  setShowAboutModal: (show: boolean) => void;
   addMessage: (message: Message) => void;
   setCurrentVideo: (video: Video | null) => void;
   setInput: (input: string) => void;
@@ -22,6 +26,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [currentVideo, setCurrentVideo] = useState<Video | null>(null);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [showMobileParliament, setShowMobileParliament] = useState(false);
+  const [showAboutModal, setShowAboutModal] = useState(false);
 
   const addMessage = (message: Message) => {
     setMessages((prev) => [...prev, message]);
@@ -104,6 +110,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         currentVideo,
         input,
         isTyping,
+        showMobileParliament,
+        showAboutModal,
+        setShowMobileParliament,
+        setShowAboutModal,
         addMessage,
         setCurrentVideo,
         setInput,
