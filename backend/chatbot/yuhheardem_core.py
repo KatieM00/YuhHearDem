@@ -715,7 +715,63 @@ class ResearchPipeline(SequentialAgent):
 class ConversationalAgent(LlmAgent):
     """Root agent that handles conversation and delegates to research when needed."""
 
-    def __init__(self, model: str, research_pipeline: ResearchPipeline, **kwargs):
+    def __init__(self, model: str, research_pipeline: ResearchPipeline, yuhheardem_system, **kwargs):
+        
+        # Define the knowledge graph reset tool as a method
+        def clear_knowledge_graph(reason: str = "Topic change detected") -> str:
+            """
+            Clear the cumulative knowledge graph to start fresh on a new topic.
+            
+            Args:
+                reason: Brief explanation of why you're clearing the knowledge graph
+                
+            Returns:
+                Confirmation message about the clearing operation
+            """
+            try:
+                # Get stats before clearing
+                old_stats = yuhheardem_system.knowledge_graph.get_summary_stats()
+                
+                # Reset the knowledge graph
+                yuhheardem_system.knowledge_graph = CumulativeKnowledgeGraph()
+                
+                # Clear session state related to knowledge graph
+                if yuhheardem_system.current_session:
+                    yuhheardem_system.current_session.state.pop("cumulative_turtle_results", None)
+                    yuhheardem_system.current_session.state.pop("persistent_knowledge_turtle", None)
+                    yuhheardem_system.current_session.state.pop("cumulative_enriched_turtle", None)
+                    yuhheardem_system.current_session.state.pop("knowledge_graph_stats", None)
+                
+                logger.info(f"🧹 Knowledge graph cleared by ConversationalAgent. Reason: {reason}")
+                logger.info(f"📊 Previous stats: {old_stats['total_triples']} triples from {old_stats['search_count']} searches")
+                
+                return (f"Knowledge graph cleared successfully. "
+                       f"Removed {old_stats['total_triples']} facts from {old_stats['search_count']} searches. "
+                       f"Reason: {reason}")
+                
+            except Exception as e:
+                error_msg = f"Failed to clear knowledge graph: {str(e)}"
+                logger.error(f"❌ {error_msg}")
+                return error_msg
+        
+        # Set function metadata for the LLM
+        clear_knowledge_graph.__name__ = "clear_knowledge_graph"
+        clear_knowledge_graph.__doc__ = """
+        Clear the cumulative knowledge graph to start fresh on a new topic.
+        
+        Use this tool when:
+        - The user changes to a completely different topic (e.g., from water issues to education)
+        - The user explicitly asks to "start over" or "new question"
+        - Previous parliamentary knowledge would be confusing for the new topic
+        - The conversation shifts from specific detailed topics to general questions
+        
+        Args:
+            reason: Brief explanation of why you're clearing (e.g., "User switched from healthcare to agriculture")
+        
+        Returns:
+            Confirmation that the knowledge graph has been cleared
+        """
+
         super().__init__(
             name="ConversationalAgent",
             model=model,
@@ -727,6 +783,24 @@ Your role is to:
 2. Recognize when users need substantive parliamentary information (delegate to the ResearchPipeline).
 3. Handle simple conversational queries directly (like "hello", "thank you", "what did I ask?").
 4. Maintain context across the conversation based on the provided history.
+5. **MANAGE KNOWLEDGE CONTEXT**: Clear the knowledge graph when topics change significantly.
+
+KNOWLEDGE MANAGEMENT:
+You have access to a `clear_knowledge_graph` tool. Use it when:
+- User switches to a completely different parliamentary topic (water → education → healthcare)
+- User says things like "new question", "different topic", "let's talk about something else"
+- Previous accumulated knowledge would confuse the new research
+- Moving from detailed specific topics to broad general questions
+
+Examples of when to clear:
+- User was asking about water infrastructure, now asks about education policy
+- User was discussing specific bills, now asks about general parliamentary procedures
+- User explicitly indicates a topic change
+
+Examples of when NOT to clear:
+- Follow-up questions on the same topic ("tell me more about that bill")
+- Related subtopics (water quality → water infrastructure → water management)
+- Clarifying questions ("what did you mean by that?")
 
 When to delegate to the ResearchPipeline:
 - Substantive questions about Parliament, ministers, policies, bills, water issues, etc.
@@ -743,6 +817,7 @@ Always:
 - Be warm and conversational.
 - Use "YuhHearDem!" as a greeting when appropriate.
 - Acknowledge the user's query and previous conversation briefly.
+- Never refer to the knowledge graph itself, just refer to "the information we have" or "the parliamentary data".
 
 IMPORTANT: For parliamentary questions, respond with a friendly acknowledgment and then call transfer_to_agent. 
 Examples:
@@ -750,12 +825,14 @@ Examples:
 - "Let me search through the parliamentary discussions about that topic."
 - "I'll find what Parliament has said about this issue."
 
+If you decide to clear the knowledge graph, do it BEFORE transferring to research so the ResearcherAgent starts with a clean slate.
+
 The research will be conducted separately and the results will be provided as a follow-up response.
 """,
+            tools=[clear_knowledge_graph],
             sub_agents=[research_pipeline],
             **kwargs
         )
-
 
 class YuhHearDemADK:
     """Main application using Google ADK with conversational architecture and cumulative knowledge graph."""
@@ -806,10 +883,11 @@ class YuhHearDemADK:
             writer_model=writer_model
         )
 
-        # Create the conversational root agent
+        # Create the conversational root agent (pass self reference for knowledge management)
         self.conversational_agent = ConversationalAgent(
             model=conversational_model,
-            research_pipeline=self.research_pipeline
+            research_pipeline=self.research_pipeline,
+            yuhheardem_system=self  # Pass reference to self for tool creation
         )
 
         # Session management

@@ -44,7 +44,7 @@ logging.getLogger('google_genai.types').setLevel(logging.ERROR)
 # Try to import our core system and rdflib components for parsing state changes
 try:
     # Import namespaces and necessary rdflib components
-    from yuhheardem_core import YuhHearDemADK, BBP, SCHEMA, PROV
+    from yuhheardem_core import YuhHearDemADK, BBP, SCHEMA, PROV, CumulativeKnowledgeGraph
     from google.adk.runners import Runner
     from google.genai.types import Content, Part
     from rdflib import Graph, URIRef # Import Graph and URIRef for parsing state
@@ -241,12 +241,17 @@ async def process_query_with_realtime_events(query: str, user_id: str, session_i
                                     conversational_text_buffer = text_content
                                     logger.info(f"📝 ConversationalAgent text captured: {text_content[:50]}...")
                             
-                            # Detect function call (transfer to research)
+                            # Detect function call (transfer to research or knowledge graph clear)
                             elif hasattr(part, 'function_call') and part.function_call:
                                 func_name = part.function_call.name
                                 if func_name == "transfer_to_agent":
                                     pending_transfer = True
                                     logger.info(f"🔄 ConversationalAgent transfer detected")
+                                elif func_name == "clear_knowledge_graph":
+                                    func_args = part.function_call.args
+                                    reason = func_args.get('reason', 'Topic change detected')
+                                    yield format_sse_event("knowledge_graph_cleared", "ConversationalAgent", f"Knowledge graph cleared: {reason}")
+                                    logger.info(f"🧹 Knowledge graph cleared by ConversationalAgent: {reason}")
 
                 # If we have collected conversational text and detected transfer, send the immediate response
                 if conversational_text_buffer and (pending_transfer or event_count > 1) and not conversational_response_sent:
@@ -313,11 +318,32 @@ async def process_query_with_realtime_events(query: str, user_id: str, session_i
 
             # Handle state changes
             if event.actions and event.actions.state_delta:
-                 if 'cumulative_turtle_results' in event.actions.state_delta or 'turtle_results' in event.actions.state_delta:
-                     cumulative_turtle_count = len(yuhheardem_system.current_session.state.get("cumulative_turtle_results", []))
-                     yield format_sse_event("data_collected", sse_agent or "ResearcherAgent", f"Collected parliamentary datasets. Total knowledge: {cumulative_turtle_count} datasets.")
+                state_delta = event.actions.state_delta
+                
+                # Check for any turtle-related state changes
+                turtle_keys = ['cumulative_turtle_results', 'turtle_results', 'persistent_knowledge_turtle']
+                has_turtle_update = any(key in state_delta for key in turtle_keys)
+                
+                if has_turtle_update:
+                    # Use knowledge graph stats for reliable count
+                    try:
+                        if hasattr(yuhheardem_system, 'knowledge_graph'):
+                            stats = yuhheardem_system.knowledge_graph.get_summary_stats()
+                            if stats['total_triples'] > 0:
+                                yield format_sse_event("data_collected", sse_agent or "ResearcherAgent", 
+                                                      f"Parliamentary knowledge updated: {stats['total_triples']} facts from {stats['search_count']} searches.")
+                            else:
+                                yield format_sse_event("data_collected", sse_agent or "ResearcherAgent", 
+                                                      "Parliamentary search in progress...")
+                        else:
+                            yield format_sse_event("data_collected", sse_agent or "ResearcherAgent", 
+                                                  "Parliamentary data collected.")
+                    except Exception as e:
+                        logger.warning(f"Error getting knowledge stats: {e}")
+                        yield format_sse_event("data_collected", sse_agent or "ResearcherAgent", 
+                                              "Parliamentary research data collected.")
 
-                 elif 'cumulative_enriched_turtle' in event.actions.state_delta or 'enriched_turtle' in event.actions.state_delta:
+                elif 'cumulative_enriched_turtle' in event.actions.state_delta or 'enriched_turtle' in event.actions.state_delta:
                      enriched_data_str = event.actions.state_delta.get('cumulative_enriched_turtle', event.actions.state_delta.get('enriched_turtle', ''))
 
                      video_count = 0
@@ -520,8 +546,10 @@ async def clear_session_endpoint(request: ClearSessionRequest):
             str(yuhheardem_system.current_session.id) == request.session_id):
              yuhheardem_system.current_session = None
              yuhheardem_system.conversation_history = [] # Clear associated history
+             # Also clear the knowledge graph when clearing session
+             yuhheardem_system.knowledge_graph = CumulativeKnowledgeGraph()
              cleared_global = True
-             logger.info(f"✅ Global current_session cleared as it matched request ID: {request.session_id[:8]}...")
+             logger.info(f"✅ Global current_session and knowledge graph cleared as it matched request ID: {request.session_id[:8]}...")
         else:
              # If the requested session is not the current global one, we cannot clear it
              # using InMemorySessionService. We can still clear the history associated
@@ -530,7 +558,7 @@ async def clear_session_endpoint(request: ClearSessionRequest):
              current_id = "None" if not yuhheardem_system.current_session else str(yuhheardem_system.current_session.id)[:8] + "..."
              logger.warning(f"Requested session {request.session_id[:8]}... does not match current global session ({current_id}). Cannot clear specific non-current session with InMemorySessionService.")
 
-        return {"status": "success", "message": f"Session {request.session_id[:8]}... clear request processed. Global session state and history cleared: {cleared_global}."}
+        return {"status": "success", "message": f"Session {request.session_id[:8]}... clear request processed. Global session state, history, and knowledge graph cleared: {cleared_global}."}
 
     except Exception as e:
         logger.error(f"Session clear error: {e}")
