@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-YuhHearDem Core ADK System - Parliamentary Research Components (SIMPLIFIED)
+YuhHearDem Core ADK System - Parliamentary Research Components (KNOWLEDGE GRAPH REFACTORED)
 ============================================================
 
-Core multi-agent system using Google Agent Development Kit with:
-1. ConversationalAgent: Root agent that handles conversation and delegates to research
-2. ResearchPipeline: Sequential pipeline with:
-   - ResearcherAgent: Performs searches using MCP tools
-   - ProvenanceAgent: Custom agent that fetches YouTube URLs for found entities
-   - WriterAgent: Synthesizes findings into cited responses (gets turtle data in constructor)
+Rearchitected to build cumulative knowledge graph where:
+1. Each search tool parses its turtle output and adds to cumulative graph
+2. Tools return serialized cumulative graph (not raw results)
+3. ResearcherAgent gets current knowledge state with each query
+4. Enables intelligent, context-aware searching
 """
 
 import asyncio
@@ -59,11 +58,81 @@ class ResearchContext:
     """Container for passing data between pipeline stages."""
     query: str
     conversation_history: List[Dict[str, str]] = field(default_factory=list)
-    turtle_results: List[str] = field(default_factory=list) # Data from current research step
-    cumulative_turtle_results: List[str] = field(default_factory=list) # Data across session
-    knowledge_graph: Graph = field(default_factory=Graph) # Cumulative graph
+    cumulative_knowledge_graph: Graph = field(default_factory=Graph) # The main cumulative graph
     enriched_turtle: str = "" # Enriched data for current research step
     cumulative_enriched_turtle: str = "" # Enriched data across session
+
+
+class CumulativeKnowledgeGraph:
+    """Manages the cumulative knowledge graph across all searches."""
+    
+    def __init__(self):
+        self.graph = Graph()
+        self.graph.bind("bbp", BBP)
+        self.graph.bind("schema", SCHEMA)
+        self.graph.bind("prov", PROV)
+        self._search_count = 0
+    
+    def add_turtle_data(self, turtle_data: str) -> bool:
+        """Add turtle data to the cumulative graph. Returns True if successful."""
+        if not turtle_data or not turtle_data.strip():
+            return False
+            
+        try:
+            temp_graph = Graph()
+            temp_graph.parse(data=turtle_data, format="turtle")
+            
+            # Add to cumulative graph
+            self.graph += temp_graph
+            self._search_count += 1
+            
+            logger.info(f"CumulativeKnowledgeGraph: Added search result #{self._search_count}. "
+                       f"Graph now has {len(self.graph)} triples.")
+            return True
+            
+        except Exception as e:
+            logger.error(f"CumulativeKnowledgeGraph: Failed to parse turtle data: {e}")
+            return False
+    
+    def get_serialized_turtle(self) -> str:
+        """Get the current cumulative graph as turtle."""
+        try:
+            return self.graph.serialize(format='turtle')
+        except Exception as e:
+            logger.error(f"CumulativeKnowledgeGraph: Failed to serialize: {e}")
+            return ""
+    
+    def get_summary_stats(self) -> Dict[str, Any]:
+        """Get summary statistics about the current knowledge graph."""
+        return {
+            "total_triples": len(self.graph),
+            "search_count": self._search_count,
+            "entities": len(set(self.graph.subjects())),
+            "properties": len(set(self.graph.predicates())),
+        }
+    
+    def get_knowledge_summary(self) -> str:
+        """Get a human-readable summary of current knowledge for the LLM."""
+        stats = self.get_summary_stats()
+        
+        if stats["total_triples"] == 0:
+            return "CURRENT KNOWLEDGE: Empty - no parliamentary data gathered yet."
+        
+        # Extract some key entities for context
+        entities = []
+        for subj in self.graph.subjects():
+            if isinstance(subj, URIRef) and str(subj).startswith(str(BBP)):
+                entity_name = str(subj).split('#')[-1].replace('_', ' ')
+                entities.append(entity_name)
+                if len(entities) >= 5:  # Limit for brevity
+                    break
+        
+        entity_list = ", ".join(entities[:3])
+        if len(entities) > 3:
+            entity_list += f" and {len(entities) - 3} others"
+        
+        return (f"CURRENT KNOWLEDGE: {stats['total_triples']} facts from {stats['search_count']} searches. "
+               f"Key entities: {entity_list}.")
 
 
 class MCPToolWrapper:
@@ -71,8 +140,6 @@ class MCPToolWrapper:
 
     def __init__(self, mcp_endpoint: str):
         self.mcp_endpoint = mcp_endpoint
-        # Client is not async-context-managed in __init__
-        self.mcp_client = Client(mcp_endpoint)
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         """Call an MCP tool and return results."""
@@ -91,14 +158,11 @@ class MCPToolWrapper:
             return f"Error calling {tool_name}: {str(e)}"
 
 
-
-
-
-# Synchronous wrappers for async MCP calls for use by LlmAgent tools
-def sync_mcp_tool_caller(mcp_wrapper: MCPToolWrapper, tool_name: str):
-    """Creates a synchronous function that calls an async MCP tool with proper ADK response format."""
-    def sync_tool_func_with_collect(query: str, **kwargs) -> str:
-        """Synchronous wrapper for the async MCP tool call with ADK-compatible response."""
+def sync_mcp_tool_caller_with_kg(mcp_wrapper: MCPToolWrapper, tool_name: str, knowledge_graph: CumulativeKnowledgeGraph):
+    """Creates a synchronous function that calls an async MCP tool and updates the knowledge graph."""
+    
+    def sync_tool_func_with_kg(query: str, **kwargs) -> str:
+        """Synchronous wrapper that updates knowledge graph and returns summary."""
         logger.info(f"🔧 Starting {tool_name} with query: '{query}' and kwargs: {kwargs}")
         
         try:
@@ -118,8 +182,6 @@ def sync_mcp_tool_caller(mcp_wrapper: MCPToolWrapper, tool_name: str):
                         logger.info(f"🔍 Calling MCP tool {tool_name} with args: {args}")
                         result = new_loop.run_until_complete(mcp_wrapper.call_tool(tool_name, args))
                         logger.info(f"📥 MCP tool {tool_name} returned: {len(str(result)) if result else 0} characters")
-                        if result:
-                            logger.debug(f"📄 First 200 chars of result: {str(result)[:200]}")
                         return result
                     except Exception as e:
                         logger.error(f"❌ Error in thread for {tool_name}: {e}")
@@ -129,7 +191,7 @@ def sync_mcp_tool_caller(mcp_wrapper: MCPToolWrapper, tool_name: str):
                 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(run_async_in_thread)
-                    result = future.result(timeout=30)
+                    raw_result = future.result(timeout=30)
                     
             except RuntimeError:
                 logger.info(f"🔄 No event loop running, creating new one for {tool_name}")
@@ -139,40 +201,39 @@ def sync_mcp_tool_caller(mcp_wrapper: MCPToolWrapper, tool_name: str):
                     args = {"query": query}
                     args.update(kwargs)
                     logger.info(f"🔍 Calling MCP tool {tool_name} with args: {args}")
-                    result = loop.run_until_complete(mcp_wrapper.call_tool(tool_name, args))
-                    logger.info(f"📥 MCP tool {tool_name} returned: {len(str(result)) if result else 0} characters")
-                    if result:
-                        logger.debug(f"📄 First 200 chars of result: {str(result)[:200]}")
+                    raw_result = loop.run_until_complete(mcp_wrapper.call_tool(tool_name, args))
+                    logger.info(f"📥 MCP tool {tool_name} returned: {len(str(raw_result)) if raw_result else 0} characters")
                 finally:
                     loop.close()
                     asyncio.set_event_loop(None)
             
-            # Process result
-            if not result:
-                logger.warning(f"⚠️ {tool_name} returned empty/None result")
-                success_msg = f"Search completed successfully for query '{query}'. No results found in parliamentary database."
-                logger.info(f"🎯 Returning success message for {tool_name}: {success_msg}")
-                return success_msg
+            # Process the raw result
+            if not raw_result or raw_result.startswith("Error"):
+                logger.warning(f"⚠️ {tool_name} returned error or empty result: {raw_result}")
+                return f"Search '{query}' completed but found no new parliamentary data."
             
-            logger.info(f"✅ {tool_name} completed successfully, result length: {len(str(result))}")
-            
-            # Check if result looks like turtle data
-            result_str = str(result)
+            # Check if result looks like turtle data and add to knowledge graph
+            result_str = str(raw_result)
             is_turtle = ('@prefix' in result_str or 'bbp:' in result_str or result_str.strip().startswith('#'))
-            logger.info(f"🐢 Result appears to be turtle data: {is_turtle}")
             
             if is_turtle:
-                sync_tool_func_with_collect.turtle_collector.append(result_str)
-                logger.info(f"📚 Added to turtle collector. Total items: {len(sync_tool_func_with_collect.turtle_collector)}")
-                
-                success_msg = f"Successfully searched parliamentary database for '{query}'. Found relevant parliamentary data."
-                logger.info(f"🎯 Returning success message for {tool_name}: {success_msg}")
-                return success_msg
+                success = knowledge_graph.add_turtle_data(result_str)
+                if success:
+                    # Return the current cumulative knowledge graph as turtle
+                    cumulative_turtle = knowledge_graph.get_serialized_turtle()
+                    stats = knowledge_graph.get_summary_stats()
+                    
+                    logger.info(f"✅ {tool_name} added to knowledge graph. Total: {stats['total_triples']} triples")
+                    
+                    # Return a message + the cumulative turtle data
+                    response = f"Search '{query}' found parliamentary data. Knowledge graph updated.\n\nCURRENT_CUMULATIVE_KNOWLEDGE_GRAPH:\n{cumulative_turtle}"
+                    return response
+                else:
+                    logger.error(f"❌ Failed to add {tool_name} result to knowledge graph")
+                    return f"Search '{query}' returned data but failed to parse into knowledge graph."
             else:
-                logger.warning(f"⚠️ Result doesn't look like turtle data: {result_str[:100]}...")
-                success_msg = f"Search completed for '{query}'. Data retrieved from parliamentary system."
-                logger.info(f"🎯 Returning success message for {tool_name}: {success_msg}")
-                return success_msg
+                logger.warning(f"⚠️ {tool_name} result doesn't look like turtle data: {result_str[:100]}...")
+                return f"Search '{query}' completed but returned non-turtle data."
             
         except concurrent.futures.TimeoutError:
             error_msg = f"Timeout calling {tool_name} after 30 seconds"
@@ -185,25 +246,25 @@ def sync_mcp_tool_caller(mcp_wrapper: MCPToolWrapper, tool_name: str):
             logger.error(f"🔍 Traceback: {traceback.format_exc()}")
             return f"Error: {error_msg}"
 
-    sync_tool_func_with_collect.turtle_collector = []
-    sync_tool_func_with_collect.__name__ = tool_name
-    return sync_tool_func_with_collect
+    sync_tool_func_with_kg.__name__ = tool_name
+    return sync_tool_func_with_kg
 
 
-def create_mcp_tools(mcp_wrapper: MCPToolWrapper):
-    """Create tool functions for ADK agents, wrapping async MCP calls with enhanced diagnostics."""
+def create_mcp_tools_with_kg(mcp_wrapper: MCPToolWrapper, knowledge_graph: CumulativeKnowledgeGraph):
+    """Create tool functions for ADK agents that update the cumulative knowledge graph."""
     
-    logger.info("🛠️ Creating MCP tools with enhanced diagnostics")
+    logger.info("🛠️ Creating MCP tools with cumulative knowledge graph integration")
 
     # Create synchronous wrappers for each tool
-    hybrid_search_tool = sync_mcp_tool_caller(mcp_wrapper, "hybrid_search_turtle")
-    authority_search_tool = sync_mcp_tool_caller(mcp_wrapper, "authority_search_turtle")
-    topic_search_tool = sync_mcp_tool_caller(mcp_wrapper, "topic_search_turtle")
+    hybrid_search_tool = sync_mcp_tool_caller_with_kg(mcp_wrapper, "hybrid_search_turtle", knowledge_graph)
+    authority_search_tool = sync_mcp_tool_caller_with_kg(mcp_wrapper, "authority_search_turtle", knowledge_graph)
+    topic_search_tool = sync_mcp_tool_caller_with_kg(mcp_wrapper, "topic_search_turtle", knowledge_graph)
 
     # Define tool metadata (args structure) - LLM needs this
     hybrid_search_tool.__name__ = "hybrid_search_turtle"
     hybrid_search_tool.__doc__ = """
         Hybrid search combining PageRank importance with semantic similarity.
+        Updates the cumulative knowledge graph and returns current state.
 
         Args:
             query: The search query string
@@ -214,6 +275,7 @@ def create_mcp_tools(mcp_wrapper: MCPToolWrapper):
     authority_search_tool.__name__ = "authority_search_turtle"
     authority_search_tool.__doc__ = """
         Search for authoritative nodes (high PageRank) related to the query.
+        Updates the cumulative knowledge graph and returns current state.
 
         Args:
             query: The search query string
@@ -225,144 +287,143 @@ def create_mcp_tools(mcp_wrapper: MCPToolWrapper):
     topic_search_tool.__name__ = "topic_search_turtle"
     topic_search_tool.__doc__ = """
         Search for nodes important within the specific topic domain.
+        Updates the cumulative knowledge graph and returns current state.
 
         Args:
             query: The search query string
             hops: Number of hops to explore (typically 2 for broader results)
             limit: Maximum number of results to return (typically 5-8)
         """
-    
-    # Combine collectors from all tools for easy access later
-    all_collectors = [hybrid_search_tool.turtle_collector, authority_search_tool.turtle_collector, topic_search_tool.turtle_collector]
-    setattr(hybrid_search_tool, '_all_collectors', all_collectors)
-    setattr(authority_search_tool, '_all_collectors', all_collectors)
-    setattr(topic_search_tool, '_all_collectors', all_collectors)
 
-    logger.info("✅ MCP tools created successfully with enhanced diagnostics")
+    logger.info("✅ MCP tools created with knowledge graph integration")
     return [hybrid_search_tool, authority_search_tool, topic_search_tool]
 
 
 class ResearcherAgent(LlmAgent):
-    """Agent that performs parliamentary research using MCP tools."""
+    """Agent that performs parliamentary research using MCP tools with cumulative knowledge graph."""
 
-    def __init__(self, model: str, mcp_wrapper: MCPToolWrapper, **kwargs):
+    def __init__(self, model: str, mcp_wrapper: MCPToolWrapper, knowledge_graph: CumulativeKnowledgeGraph, **kwargs):
         # Create MCP-based tools wrapped for synchronous use by LlmAgent
-        tools = create_mcp_tools(mcp_wrapper)
+        tools = create_mcp_tools_with_kg(mcp_wrapper, knowledge_graph)
 
         super().__init__(
             name="ResearcherAgent",
             model=model,
-            description="Performs thorough parliamentary research using search tools",
-            instruction="""You are a Parliamentary Research Assistant performing background research.
+            description="Performs thorough parliamentary research using search tools with cumulative knowledge awareness",
+            instruction="""You are a Parliamentary Research Assistant with ACCESS TO CUMULATIVE KNOWLEDGE.
 
-Your job is to systematically search for information using the available tools, taking into account the conversation history above.
+You can see all parliamentary data gathered so far in this conversation. Use this to make SMART search decisions:
 
-ALWAYS USE 1 HOP
-
-HISTORY-AWARE RESEARCH STRATEGY:
-1. Consider what has been discussed before - build on previous searches rather than repeat them
-2. Look for connections between the current query and previously mentioned entities/topics
-3. If this is a follow-up question, focus on aspects not covered in previous searches
-4. Use entity names and topics from the conversation history to inform your searches
+KNOWLEDGE-AWARE RESEARCH STRATEGY:
+1. ANALYZE CURRENT KNOWLEDGE: Look at what entities, topics, and facts you already have
+2. IDENTIFY GAPS: What's missing for a complete answer to the user's question?
+3. AVOID REDUNDANCY: Don't search for information you already have
+4. BUILD CONNECTIONS: Look for related entities and expand the knowledge network
+5. STRATEGIC SEARCHING: Use different search types based on what you need:
+   - hybrid_search_turtle: For balanced importance + relevance
+   - authority_search_turtle: For what leaders/ministers said
+   - topic_search_turtle: For domain-specific deep dives
 
 SEARCH PROCESS:
-1. Start with hybrid_search_turtle for the main query
-2. Try multiple variations and related terms (synonyms, broader/narrower concepts)
-3. Use authority_search_turtle to find what parliamentary leaders said
-4. Use topic_search_turtle for focused topical searches
-5. Be thorough - make 5-10 searches with different approaches
-6. IMPORTANT: Use conversation context to guide search terms and avoid redundant searches
+1. First, review your current knowledge graph (if any)
+2. Plan 3-5 strategic searches that complement existing knowledge
+3. Start broad, then get specific based on what you find
+4. Look for connections between new and existing entities
+5. Stop when you have comprehensive coverage of the topic
 
-TEMPORAL FOCUS: Prioritize 2025 information when available, but also search for historical context and trends. Try adding "2025", "2024", "recent" to queries when relevant.
+TEMPORAL FOCUS: Prioritize 2025 information when available, but connect to historical context.
 
-CONTEXT-AWARE Search strategy examples:
-- If health was discussed before and user asks about "budget", try "health budget", "healthcare funding"
-- If a Minister was mentioned before, include their name in relevant searches
-- If looking for recent developments, reference previously discussed time periods
-- Connect current query to entities from conversation history when relevant
+IMPORTANT: Each search tool will return the UPDATED cumulative knowledge graph. Pay attention to what's been added and adjust your next searches accordingly.
 
-EXAMPLE CONTEXT USAGE:
-- Previous context: "Minister of Health discussed COVID-19"
-- Current query: "vaccination rates"
-- Enhanced searches: "Minister of Health vaccination rates", "COVID-19 vaccination Barbados", "vaccination program 2025"
+After completing strategic searches, respond with exactly: "Research complete."
 
-After completing all searches, respond with exactly: "Research complete."
-
-This single phrase signals completion and prevents infinite loops. 
-Do not add any other content that wasn't explicitly instructed.
+This signals completion and prevents infinite loops.
 """,
             tools=tools,
             generate_content_config=types.GenerateContentConfig(
-                max_output_tokens=1000,
+                max_output_tokens=1500,
                 temperature=0.3
             ),
             **kwargs
         )
 
-        # Store tools and mcp_wrapper for internal use
+        # Store references for internal use
         object.__setattr__(self, '_tools', tools)
         object.__setattr__(self, '_mcp_wrapper', mcp_wrapper)
+        object.__setattr__(self, '_knowledge_graph', knowledge_graph)
+
+    def _build_context_with_knowledge(self, original_query: str, conversation_history: List[Dict[str, str]]) -> str:
+        """Build enhanced context that includes current knowledge state."""
+        
+        # Get knowledge summary
+        knowledge_summary = self._knowledge_graph.get_knowledge_summary()
+        
+        # Build conversation context
+        context = f"USER QUERY: {original_query}\n\n"
+        context += f"{knowledge_summary}\n\n"
+        
+        if conversation_history:
+            context += "CONVERSATION HISTORY:\n"
+            # Include last few exchanges for context
+            for exchange in conversation_history[-3:]:
+                context += f"User: {exchange['user']}\n"
+                assistant_preview = exchange.get('assistant', '')[:200]
+                context += f"Assistant: {assistant_preview}...\n\n"
+        
+        # Add current cumulative knowledge if it exists
+        current_turtle = self._knowledge_graph.get_serialized_turtle()
+        if current_turtle.strip():
+            context += "CURRENT CUMULATIVE KNOWLEDGE GRAPH:\n"
+            context += current_turtle + "\n\n"
+        
+        context += "Based on the above knowledge and context, perform strategic searches to complete your understanding."
+        
+        return context
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
-        """Override to manage state updates based on collected turtle data."""
-
-        # Get the list of collectors from one of the tools
-        all_collectors = getattr(self._tools[0], '_all_collectors', [])
-        # Clear collectors before starting the run for this invocation
-        for collector in all_collectors:
-            collector.clear()
-
-        # CRITICAL FIX: Actually yield the events from the parent LlmAgent
+        """Override to provide knowledge-aware context to the LLM."""
+        
+        # Extract original query and conversation history from context
+        original_query = ctx.session.state.get('original_query', 'parliamentary matters')
+        conversation_history = ctx.session.state.get('conversation_history', [])
+        
+        # Build enhanced context with knowledge awareness
+        enhanced_context = self._build_context_with_knowledge(original_query, conversation_history)
+        
+        # Replace the user message with our enhanced context
+        if hasattr(ctx, 'initial_user_content') and ctx.initial_user_content:
+            # Create new content with enhanced context
+            enhanced_content = Content(
+                role="user",
+                parts=[Part.from_text(text=enhanced_context)]
+            )
+            ctx.initial_user_content = enhanced_content
+        
+        # Run the parent LlmAgent with enhanced context
         async for event in super()._run_async_impl(ctx):
             yield event
 
-        # After the LLM is done, collect the raw turtle data from the tools' collectors.
-        raw_turtle_data = []
-        for collector in all_collectors:
-            raw_turtle_data.extend(collector)
-            collector.clear()
-
-        if raw_turtle_data:
-            logger.info(f"ResearcherAgent: Collected {len(raw_turtle_data)} raw turtle datasets")
-
-            # Get existing cumulative turtle data from session state
-            cumulative_turtle_data = ctx.session.state.get("cumulative_turtle_results", [])
-            if not isinstance(cumulative_turtle_data, list):
-                logger.warning(f"cumulative_turtle_results in state is not a list, resetting. Type: {type(cumulative_turtle_data)}")
-                cumulative_turtle_data = []
-
-            # Accumulate new data with existing data
-            cumulative_turtle_data.extend(raw_turtle_data)
-
-            logger.info(f"ResearcherAgent: Total accumulated turtle datasets: {len(cumulative_turtle_data)}")
-
-            # Store both the new data (for this turn's provenance) and cumulative data
-            ctx.session.state["turtle_results"] = raw_turtle_data
-            ctx.session.state["cumulative_turtle_results"] = cumulative_turtle_data
-
-            yield Event(
-                author=self.name,
-                content=Content(
-                    role="assistant",
-                    parts=[Part.from_text(text=f"Collected {len(raw_turtle_data)} new datasets. Total knowledge: {len(cumulative_turtle_data)} datasets.")]
-                ),
-                actions=EventActions(state_delta={
-                    "turtle_results": raw_turtle_data,
-                    "cumulative_turtle_results": cumulative_turtle_data
-                })
-            )
-        else:
-            logger.warning("ResearcherAgent: No turtle data collected from tools during this run.")
-            yield Event(
-                author=self.name,
-                content=Content(
-                    role="assistant",
-                    parts=[Part.from_text(text="No new parliamentary data collected in this step.")]
-                ),
-                actions=EventActions(state_delta={
-                    "turtle_results": [],
-                })
-            )
+        # After completion, store the final knowledge graph state
+        final_turtle = self._knowledge_graph.get_serialized_turtle()
+        
+        # PRESERVE cumulative knowledge: Don't overwrite, just ensure it's available
+        if final_turtle:
+            ctx.session.state["cumulative_turtle_results"] = [final_turtle]
+            ctx.session.state["persistent_knowledge_turtle"] = final_turtle
+        
+        stats = self._knowledge_graph.get_summary_stats()
+        yield Event(
+            author=self.name,
+            content=Content(
+                role="assistant",
+                parts=[Part.from_text(text=f"Research completed. Knowledge graph: {stats['total_triples']} triples from {stats['search_count']} searches.")]
+            ),
+            actions=EventActions(state_delta={
+                "cumulative_turtle_results": [final_turtle] if final_turtle else [],
+                "persistent_knowledge_turtle": final_turtle if final_turtle else "",
+                "knowledge_graph_stats": stats
+            })
+        )
 
 
 class ProvenanceAgent(BaseAgent):
@@ -382,7 +443,12 @@ class ProvenanceAgent(BaseAgent):
 
         try:
             # Access cumulative turtle data from session state
-            cumulative_turtle_results = ctx.session.state.get("cumulative_turtle_results", [])
+            # Try persistent knowledge first, then fall back to cumulative results
+            persistent_turtle = ctx.session.state.get("persistent_knowledge_turtle", "")
+            if persistent_turtle:
+                cumulative_turtle_results = [persistent_turtle]
+            else:
+                cumulative_turtle_results = ctx.session.state.get("cumulative_turtle_results", [])
 
             if not cumulative_turtle_results:
                 logger.warning("ProvenanceAgent: No cumulative turtle results found in session state")
@@ -399,7 +465,7 @@ class ProvenanceAgent(BaseAgent):
                 )
                 return
 
-            logger.info(f"ProvenanceAgent: Processing {len(cumulative_turtle_results)} turtle datasets (cumulative knowledge)")
+            logger.info(f"ProvenanceAgent: Processing {len(cumulative_turtle_results)} turtle datasets")
 
             # Parse cumulative data into a combined graph
             combined_graph = Graph()
@@ -409,34 +475,29 @@ class ProvenanceAgent(BaseAgent):
 
             parsed_count = 0
             for turtle_data in cumulative_turtle_results:
-                 try:
-                     temp_graph = Graph()
-                     temp_graph.parse(data=turtle_data, format="turtle")
-                     combined_graph += temp_graph
-                     parsed_count += 1
-                 except Exception as parse_error:
-                     logger.warning(f"ProvenanceAgent: Failed to parse individual turtle dataset for enrichment: {parse_error}")
-                     continue
+                try:
+                    combined_graph.parse(data=turtle_data, format="turtle")
+                    parsed_count += 1
+                except Exception as parse_error:
+                    logger.warning(f"ProvenanceAgent: Failed to parse turtle dataset: {parse_error}")
+                    continue
 
             if parsed_count == 0:
-                logger.warning("ProvenanceAgent: Failed to parse any cumulative turtle datasets")
-                ctx.session.state["enriched_turtle"] = str(cumulative_turtle_results)
-                ctx.session.state["cumulative_enriched_turtle"] = str(cumulative_turtle_results)
+                logger.warning("ProvenanceAgent: Failed to parse any turtle datasets")
+                fallback_data = "\n".join(cumulative_turtle_results)
+                ctx.session.state["cumulative_enriched_turtle"] = fallback_data
 
                 yield Event(
                     author=self.name,
                     content=Content(
                         role="assistant",
-                        parts=[Part.from_text(text="Failed to parse cumulative turtle data for enrichment.")]
+                        parts=[Part.from_text(text="Failed to parse turtle data for enrichment.")]
                     ),
-                    actions=EventActions(state_delta={
-                        "enriched_turtle": str(cumulative_turtle_results),
-                        "cumulative_enriched_turtle": str(cumulative_turtle_results)
-                    })
+                    actions=EventActions(state_delta={"cumulative_enriched_turtle": fallback_data})
                 )
                 return
 
-            logger.info(f"ProvenanceAgent: Successfully parsed {parsed_count} cumulative turtle datasets into graph.")
+            logger.info(f"ProvenanceAgent: Successfully parsed {parsed_count} turtle datasets into graph.")
 
             # Extract BBP URIs (parliamentary entities) from the combined graph
             all_uris = set()
@@ -445,21 +506,17 @@ class ProvenanceAgent(BaseAgent):
                     all_uris.add(str(subj))
 
             if not all_uris:
-                logger.warning("ProvenanceAgent: No parliamentary entities found in cumulative turtle data")
+                logger.warning("ProvenanceAgent: No parliamentary entities found in turtle data")
                 enriched_turtle = combined_graph.serialize(format='turtle')
-                ctx.session.state["enriched_turtle"] = enriched_turtle
                 ctx.session.state["cumulative_enriched_turtle"] = enriched_turtle
 
                 yield Event(
                     author=self.name,
                     content=Content(
                         role="assistant",
-                        parts=[Part.from_text(text="Processed cumulative research data but found no parliamentary entities to enrich.")]
+                        parts=[Part.from_text(text="Processed research data but found no parliamentary entities to enrich.")]
                     ),
-                    actions=EventActions(state_delta={
-                        "enriched_turtle": enriched_turtle,
-                        "cumulative_enriched_turtle": enriched_turtle
-                    })
+                    actions=EventActions(state_delta={"cumulative_enriched_turtle": enriched_turtle})
                 )
                 return
 
@@ -480,8 +537,8 @@ class ProvenanceAgent(BaseAgent):
 
             # Add provenance data to the combined graph
             if provenance_result_str and not provenance_result_str.startswith("Error"):
-                prov_graph = Graph()
                 try:
+                    prov_graph = Graph()
                     prov_graph.parse(data=provenance_result_str, format="turtle")
                     combined_graph += prov_graph
 
@@ -489,9 +546,8 @@ class ProvenanceAgent(BaseAgent):
                     video_count = len(list(prov_graph.subjects(predicate=URIRef(SCHEMA["url"]))))
                     total_video_count = len(list(combined_graph.subjects(predicate=URIRef(SCHEMA["url"]))))
 
-                    logger.info(f"ProvenanceAgent: Retrieved {video_count} new video sources. Total videos in knowledge graph: {total_video_count}")
-
-                    content_msg = f"Enriched cumulative knowledge graph with {video_count} new video sources. Total: {total_video_count} videos."
+                    logger.info(f"ProvenanceAgent: Retrieved {video_count} new video sources. Total videos: {total_video_count}")
+                    content_msg = f"Enriched knowledge graph with {video_count} new video sources. Total: {total_video_count} videos."
 
                 except Exception as e:
                     logger.error(f"ProvenanceAgent: Failed to parse provenance result: {e}")
@@ -500,11 +556,8 @@ class ProvenanceAgent(BaseAgent):
                 logger.warning(f"ProvenanceAgent: Failed to retrieve video sources: {provenance_result_str}")
                 content_msg = f"Failed to retrieve video sources: {provenance_result_str}"
 
-            # Serialize the enriched cumulative graph
+            # Serialize the enriched graph
             enriched_turtle = combined_graph.serialize(format='turtle')
-
-            # Store both the result from this step and the cumulative enriched turtle in session state
-            ctx.session.state["enriched_turtle"] = enriched_turtle
             ctx.session.state["cumulative_enriched_turtle"] = enriched_turtle
 
             yield Event(
@@ -513,48 +566,28 @@ class ProvenanceAgent(BaseAgent):
                     role="assistant",
                     parts=[Part.from_text(text=content_msg)]
                 ),
-                actions=EventActions(state_delta={
-                    "cumulative_enriched_turtle": enriched_turtle,
-                })
+                actions=EventActions(state_delta={"cumulative_enriched_turtle": enriched_turtle})
             )
 
             logger.info("ProvenanceAgent: Video source enrichment completed")
 
         except Exception as e:
             logger.error(f"ProvenanceAgent failed: {e}")
-            error_msg = f"Video source enrichment failed: {str(e)}"
-
-            # FALLBACK: If provenance fails, still provide the raw turtle data to WriterAgent
+            
+            # Fallback: provide raw data without provenance
             try:
-                logger.info("ProvenanceAgent: Attempting fallback - combining raw turtle data without provenance")
-                fallback_graph = Graph()
-                fallback_graph.bind("bbp", BBP)
-                fallback_graph.bind("schema", SCHEMA)
-                fallback_graph.bind("prov", PROV)
-                
+                logger.info("ProvenanceAgent: Attempting fallback without provenance")
                 cumulative_turtle_results = ctx.session.state.get("cumulative_turtle_results", [])
+                fallback_data = "\n".join(cumulative_turtle_results) if cumulative_turtle_results else ""
+                ctx.session.state["cumulative_enriched_turtle"] = fallback_data
                 
-                for turtle_data in cumulative_turtle_results:
-                    try:
-                        temp_graph = Graph()
-                        temp_graph.parse(data=turtle_data, format="turtle")
-                        fallback_graph += temp_graph
-                    except Exception as parse_error:
-                        logger.warning(f"ProvenanceAgent fallback: Failed to parse turtle dataset: {parse_error}")
-                        continue
-                
-                fallback_turtle = fallback_graph.serialize(format='turtle')
-                ctx.session.state["cumulative_enriched_turtle"] = fallback_turtle
-                logger.info(f"ProvenanceAgent: Stored fallback turtle data ({len(fallback_turtle)} characters)")
-                
-                error_msg += f" Using raw parliamentary data as fallback ({len(fallback_turtle)} characters)."
+                error_msg = f"Video source enrichment failed: {str(e)}. Using raw data as fallback."
                 
             except Exception as fallback_error:
                 logger.error(f"ProvenanceAgent: Fallback also failed: {fallback_error}")
-                error_msg += " Fallback to raw data also failed."
+                error_msg = f"Video source enrichment and fallback both failed: {str(e)}"
+                ctx.session.state["cumulative_enriched_turtle"] = ""
 
-            ctx.session.state["provenance_error"] = str(e)
-            
             yield Event(
                 author=self.name,
                 content=Content(
@@ -572,31 +605,35 @@ class WriterAgent(LlmAgent):
         # Build the instruction with the turtle data directly in the prompt
         instruction = f"""You are YuhHearDem, a civic AI assistant that helps users understand Barbados Parliament discussions.
 
-
-Based on the parliamentary data below, provide a comprehensive answer to the user's question. 
+Based on the parliamentary data below, provide a comprehensive answer to the user's question.
 
 RESPONSE GUIDELINES:
 - Write in clear, accessible language for citizens, journalists, and students
 - Structure your response with: Summary → Key Discussion Points with inline citations
-- Use INLINE MARKDOWN LINKS for all specific claims, quotes, and references
-- The ONLY links must be YouTube URLs from the turtle data, do not hallucinate links
-- Look for provenance statements in the turtle data that have schema:url, schema:text, schema:videoTitle properties
-- Format video links as: [quoted text or claim](YouTube_URL) 
-- When referencing parliamentary discussions, link the specific statement or fact
-- If this relates to previous conversation topics, acknowledge the connection naturally
-- If limited information was found, explain what was searched and suggest related topics
-- Use parliamentary terminology appropriately (e.g., "parliamentary sessions", "Minister", "constituency")
-- Be objective and factual, focusing on what was actually discussed in Parliament
-- DO NOT include a separate "Sources" section - all references should be inline markdown links
-- ONLY cite video URLs that are actually present in the turtle data - do not hallucinate links
-- Never include any other types of links or sources, only YouTube URLs from the turtle data
+- Use INLINE MARKDOWN LINKS for all specific claims, quotes, and references from the parliamentary data.
+- The ONLY links must be YouTube URLs derived from the turtle data (`schema:url`), do not hallucinate links.
+- Look for provenance statements in the turtle data that have `schema:url`, `schema:text`, `schema:videoTitle`, and `schema:startTime` properties.
+- **Specific Link Formatting:** When linking to a statement or claim found in the turtle data, include the timestamp and the video source for context. Format the reference *inline* after the relevant text like this: `([Timestamp] from "[Video Source Hint]")`.
+    - The `[Timestamp]` part *itself* should be the markdown link.
+    - The link URL should be the `schema:url` from the data with the `schema:startTime` added as a `#t=` fragment (e.g., `https://www.youtube.com/watch?v=videoID&t=startTimeInSeconds`).
+    - Convert the `schema:startTime` (in seconds) to a clear MM:SS or H:MM:SS format for the displayed timestamp text.
+    - For the "[Video Source Hint]", use a brief, recognizable part of the `schema:videoTitle`, such as the date and "House Session".
 
-CRITICAL: Only use video links that appear in the turtle data with schema:url properties. If no video sources are found in the turtle data, state that no video sources were available and explain what information was found instead.
+- **Example Link Format:** `...the second reading of the Queen Elizabeth Hospital Amendment Bill 2024 ([0:01:21](https://www.youtube.com/watch?v=pyKuPiXNDDo&t=81s) from "Mar 5, 2024 House Session").`
+- When referencing parliamentary discussions, ensure the inline link correctly points to the specific statement's timestamp in the video.
+- If this relates to previous conversation topics, acknowledge the connection naturally.
+- If limited information was found, explain what was searched and suggest related topics.
+- Use parliamentary terminology appropriately (e.g., "parliamentary sessions", "Minister", "constituency").
+- Be objective and factual, focusing on what was actually discussed in Parliament.
+- DO NOT include a separate "Sources" section - all references should be inline markdown links.
+- ONLY cite video URLs that are actually present in the turtle data with `schema:url` properties - do not hallucinate links.
+- Never include any other types of links or sources, only YouTube URLs from the turtle data.
 
-If substantial information was found, provide detailed coverage with inline citations. If little was found, clearly explain the research conducted and suggest alternative search approaches.
+CRITICAL: Only use video links and the corresponding `startTime` and `videoTitle` that appear in the turtle data. If no relevant video sources are found in the turtle data for a specific claim, state that no video sources were available for that point and explain what information was found instead (e.g., "According to the data provided, [claim], however, the source video was not available.").
 
-Remember: You're helping regular citizens understand Parliament. Keep it real, keep it clear, cite your video sources, and make it sound like you're referencing actual parliamentary proceedings!
+If substantial information was found, provide detailed coverage with inline citations formatted as specified. If little was found, clearly explain the research conducted and suggest alternative search approaches.
 
+Remember: You're helping regular citizens understand Parliament. Keep it real, keep it clear, cite your video sources with timestamps and source hints, and make it sound like you're referencing actual parliamentary proceedings!
 USER QUERY: {user_query}
 
 PARLIAMENTARY DATA TO ANALYZE:
@@ -619,34 +656,20 @@ class ResearchPipeline(SequentialAgent):
     """Sequential pipeline for research -> provenance -> writing."""
 
     def __init__(self, researcher: ResearcherAgent, provenance: ProvenanceAgent, writer_model: str, **kwargs):
-        # Only pass the researcher and provenance agents to the parent
-        # WriterAgent will be created dynamically with the turtle data
         super().__init__(
             name="ResearchPipeline",
             description="Sequential pipeline for parliamentary research with video source enrichment",
-            sub_agents=[researcher, provenance],  # No writer here - we'll create it dynamically
+            sub_agents=[researcher, provenance],
             **kwargs
         )
-        # Store writer_model using object.__setattr__ to avoid SequentialAgent field restrictions
         object.__setattr__(self, '_writer_model', writer_model)
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
-        """Override to handle the simplified data flow between sequential agents."""
+        """Override to handle the data flow between sequential agents."""
 
         # Store the original query for the WriterAgent
-        original_query = "parliamentary matters"
-        if hasattr(ctx, 'initial_user_content') and ctx.initial_user_content:
-            if hasattr(ctx.initial_user_content, 'parts') and ctx.initial_user_content.parts:
-                for part in ctx.initial_user_content.parts:
-                    if hasattr(part, 'text') and part.text:
-                        query_match = re.search(r"CURRENT QUERY:\s*(.*)", part.text, re.DOTALL)
-                        if query_match:
-                            original_query = query_match.group(1).strip()
-                        else:
-                             original_query = part.text.strip()
-                        break
-        ctx.session.state['original_query'] = original_query
-        logger.info(f"ResearchPipeline: Stored original query: {original_query[:50]}...")
+        original_query = ctx.session.state.get('original_query', 'parliamentary matters')
+        logger.info(f"ResearchPipeline: Processing query: {original_query[:50]}...")
 
         # 1. Run ResearcherAgent
         logger.info("ResearchPipeline: Running ResearcherAgent...")
@@ -658,7 +681,7 @@ class ResearchPipeline(SequentialAgent):
         async for event in self.sub_agents[1].run_async(ctx):
             yield event
 
-        # 3. Get the combined turtle data and create a new WriterAgent with it
+        # 3. Create WriterAgent with enriched turtle data
         cumulative_enriched_turtle = ctx.session.state.get("cumulative_enriched_turtle", "")
         
         if not cumulative_enriched_turtle:
@@ -673,20 +696,15 @@ class ResearchPipeline(SequentialAgent):
 
         logger.info(f"ResearchPipeline: Creating WriterAgent with {len(cumulative_enriched_turtle)} characters of turtle data")
         
-        # 4. Create a new WriterAgent instance with the turtle data
+        # 4. Create and run WriterAgent
         writer_agent = WriterAgent(
             model=self._writer_model,
             turtle_data=cumulative_enriched_turtle,
             user_query=original_query,
-            generate_content_config=types.GenerateContentConfig(
-                temperature=0.7,
-            ),
-            planner=BuiltInPlanner(
-                thinking_config=types.ThinkingConfig(thinking_budget=1024)
-            )
+            generate_content_config=types.GenerateContentConfig(temperature=0.7),
+            planner=BuiltInPlanner(thinking_config=types.ThinkingConfig(thinking_budget=1024))
         )
         
-        # 5. Run the WriterAgent
         logger.info("ResearchPipeline: Running dynamically created WriterAgent...")
         async for event in writer_agent.run_async(ctx):
             yield event
@@ -740,7 +758,7 @@ The research will be conducted separately and the results will be provided as a 
 
 
 class YuhHearDemADK:
-    """Main application using Google ADK with conversational architecture."""
+    """Main application using Google ADK with conversational architecture and cumulative knowledge graph."""
 
     def __init__(self, mcp_endpoint: str, google_api_key: str):
         self.mcp_endpoint = mcp_endpoint
@@ -749,44 +767,46 @@ class YuhHearDemADK:
         # Initialize MCP wrapper
         self.mcp_wrapper = MCPToolWrapper(mcp_endpoint)
 
+        # Initialize cumulative knowledge graph
+        self.knowledge_graph = CumulativeKnowledgeGraph()
+
         # Initialize Google GenAI with API key
         if self.api_key:
-             try:
-                 try:
-                     import google.generativeai as genai
-                     genai.configure(api_key=self.api_key)
-                     logger.info("✅ Google Generative AI configured successfully")
-                 except ImportError:
-                     # google.generativeai is not installed, but ADK might still work
-                     logger.warning("⚠️ google.generativeai not installed, but continuing with ADK")
-             except Exception as e:
-                 logger.error(f"❌ Failed to configure Google Generative AI: {e}")
-                 self.api_key = None
+            try:
+                try:
+                    import google.generativeai as genai
+                    genai.configure(api_key=self.api_key)
+                    logger.info("✅ Google Generative AI configured successfully")
+                except ImportError:
+                    logger.warning("⚠️ google.generativeai not installed, but continuing with ADK")
+            except Exception as e:
+                logger.error(f"❌ Failed to configure Google Generative AI: {e}")
+                self.api_key = None
 
-        # Define models - use environment variables or defaults
+        # Define models
         researcher_model = os.getenv("RESEARCHER_MODEL", "gemini-2.0-flash")
         writer_model = os.getenv("WRITER_MODEL", "gemini-2.5-flash-preview-05-20")
         conversational_model = os.getenv("CONVERSATIONAL_MODEL", "gemini-2.0-flash")
 
-        # Create the research pipeline agents
+        # Create the research pipeline agents with shared knowledge graph
         self.researcher = ResearcherAgent(
             model=researcher_model,
-            mcp_wrapper=self.mcp_wrapper
+            mcp_wrapper=self.mcp_wrapper,
+            knowledge_graph=self.knowledge_graph  # Shared knowledge graph
         )
 
         self.provenance_agent = ProvenanceAgent(
             mcp_wrapper=self.mcp_wrapper
         )
 
-        # Create the research pipeline (SequentialAgent)
-        # WriterAgent will be created dynamically with turtle data
+        # Create the research pipeline
         self.research_pipeline = ResearchPipeline(
             researcher=self.researcher,
             provenance=self.provenance_agent,
             writer_model=writer_model
         )
 
-        # Create the conversational root agent (LlmAgent)
+        # Create the conversational root agent
         self.conversational_agent = ConversationalAgent(
             model=conversational_model,
             research_pipeline=self.research_pipeline
@@ -809,18 +829,30 @@ class YuhHearDemADK:
             return False
 
     async def process_query(self, query: str) -> Tuple[str, Dict[str, Any]]:
-        """Process a query through the conversational agent (non-streaming version)."""
+        """Process a query through the conversational agent with cumulative knowledge awareness."""
         try:
-            logger.info(f"Processing non-stream query: {query[:50]}...")
+            logger.info(f"Processing query with cumulative knowledge: {query[:50]}...")
 
             user_id = "user"
 
             if not self.current_session:
-                 self.current_session = await self.session_service.create_session(
+                self.current_session = await self.session_service.create_session(
                     app_name="YuhHearDem",
                     user_id=user_id
-                 )
-                 logger.info(f"Created new session {self.current_session.id[:8]}... for non-stream query.")
+                )
+                logger.info(f"Created new session {self.current_session.id[:8]}...")
+            else:
+                # Restore knowledge graph from previous session if available
+                persistent_turtle = self.current_session.state.get("persistent_knowledge_turtle", "")
+                if persistent_turtle and len(self.knowledge_graph.graph) == 0:
+                    logger.info("Restoring knowledge graph from previous session...")
+                    success = self.knowledge_graph.add_turtle_data(persistent_turtle)
+                    if success:
+                        logger.info(f"Restored knowledge graph: {self.knowledge_graph.get_summary_stats()}")
+
+            # Store conversation history and query in session state
+            self.current_session.state['conversation_history'] = self.conversation_history
+            self.current_session.state['original_query'] = query
 
             # Create runner for conversational agent
             runner = Runner(
@@ -829,7 +861,7 @@ class YuhHearDemADK:
                 app_name="YuhHearDem"
             )
 
-            # Build conversation context from global history
+            # Build conversation context
             context = ""
             if self.conversation_history:
                 context = "\n\nPREVIOUS CONVERSATION:\n"
@@ -838,8 +870,12 @@ class YuhHearDemADK:
                     context += f"User: {exchange['user']}\n"
                     assistant_text = exchange.get('assistant', '')
                     if len(assistant_text) > 300:
-                         assistant_text = assistant_text[:300] + "..."
+                        assistant_text = assistant_text[:300] + "..."
                     context += f"Assistant: {assistant_text}\n\n"
+
+            # Add knowledge graph summary if available
+            kg_summary = self.knowledge_graph.get_knowledge_summary()
+            context += f"\n{kg_summary}\n"
 
             # Create the prompt with context
             full_prompt = f"{context}CURRENT QUERY: {query}"
@@ -848,7 +884,7 @@ class YuhHearDemADK:
             user_message = Content(role="user", parts=[Part.from_text(text=full_prompt)])
 
             final_response_text = ""
-            turtle_results = []
+            knowledge_stats = {}
 
             events = runner.run(
                 user_id=user_id,
@@ -856,32 +892,18 @@ class YuhHearDemADK:
                 new_message=user_message
             )
 
-            # Process events (synchronous iteration)
+            # Process events
             for event in events:
                 if hasattr(event, 'content') and event.content:
                     if hasattr(event.content, 'parts') and event.content.parts:
                         for part in event.content.parts:
                             if hasattr(part, 'text') and part.text:
-                                # Only accumulate text content if it's from the WriterAgent
+                                # Only accumulate text content from WriterAgent
                                 if event.author == "WriterAgent":
                                     final_response_text += part.text
 
-                            elif hasattr(part, 'function_response') and part.function_response:
-                                if hasattr(part.function_response, 'response'):
-                                    fr_response = part.function_response.response
-
-                                    if isinstance(fr_response, dict):
-                                        for key in ['result', 'content', 'turtle_results', 'enriched_turtle', 'cumulative_turtle_results', 'cumulative_enriched_turtle']:
-                                            if key in fr_response:
-                                                value = str(fr_response[key])
-                                                if value and ('@prefix' in value or value.strip().startswith('#') or 'bbp:' in value):
-                                                    turtle_results.append(value)
-                                    elif isinstance(fr_response, str):
-                                        if fr_response and ('@prefix' in fr_response or fr_response.strip().startswith('#') or 'bbp:' in fr_response):
-                                            turtle_results.append(fr_response)
-
-            # Clean the accumulated WriterAgent text
-            final_response_text = final_response_text
+            # Get final knowledge graph statistics
+            knowledge_stats = self.knowledge_graph.get_summary_stats()
 
             # Update conversation history
             self.conversation_history.append({
@@ -892,9 +914,13 @@ class YuhHearDemADK:
             # Trim history if too long
             if len(self.conversation_history) > 10:
                 self.conversation_history = self.conversation_history[-10:]
-                logger.info("Conversation history trimmed in process_query.")
+                logger.info("Conversation history trimmed.")
 
-            return final_response_text, {"success": True, "turtle_count": len(turtle_results)}
+            return final_response_text, {
+                "success": True, 
+                "knowledge_stats": knowledge_stats,
+                "cumulative_knowledge": True
+            }
 
         except Exception as e:
             logger.error(f"Query processing failed: {e}")
@@ -903,12 +929,17 @@ class YuhHearDemADK:
             return f"❌ Error processing query: {str(e)}", {"success": False}
 
     def clear_history(self):
-        """Clear conversation history but preserve accumulated knowledge in session state."""
+        """Clear conversation history but preserve accumulated knowledge."""
         self.conversation_history = []
-        logger.info("Conversation history cleared.")
+        logger.info("Conversation history cleared. Knowledge graph preserved.")
 
     def clear_all(self):
-        """Clear everything including accumulated knowledge (by resetting the session)."""
+        """Clear everything including accumulated knowledge."""
         self.conversation_history = []
         self.current_session = None
-        logger.info("All state cleared including accumulated knowledge.")
+        self.knowledge_graph = CumulativeKnowledgeGraph()  # Reset knowledge graph
+        logger.info("All state cleared including cumulative knowledge graph.")
+
+    def get_knowledge_stats(self) -> Dict[str, Any]:
+        """Get current knowledge graph statistics."""
+        return self.knowledge_graph.get_summary_stats()
