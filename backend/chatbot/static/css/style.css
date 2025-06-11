@@ -1,0 +1,461 @@
+/* YuhHearDem Styles */
+
+.message-bubble {
+    animation: slideIn 0.3s ease-out;
+}
+
+.status-panel {
+    animation: slideIn 0.2s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.gradient-bg {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.chat-container {
+    height: calc(100vh - 200px);
+}
+
+/* Connection status indicators */
+.connection-status-connected {
+    background-color: #10b981;
+    animation: pulse 2s infinite;
+}
+
+.connection-status-disconnected {
+    background-color: #ef4444;
+}
+
+/* Message styling improvements */
+.message-bubble .bg-blue-50 {
+    border-left: 4px solid #3b82f6;
+}
+
+.message-bubble .bg-green-50 {
+    border-left: 4px solid #10b981;
+}
+
+/* HTML Content Styling within Assistant Messages */
+.message-bubble .text-gray-800 {
+    line-height: 1.6;
+}
+
+/* Headers in assistant messages */
+.message-bubble .text-gray-800 h1,
+.message-bubble .text-gray-800 h2,
+.message-bubble .text-gray-800 h3,
+.message-bubble .text-gray-800 h4,
+.message-bubble .text-gray-800 h5,
+.message-bubble .text-gray-800 h6 {
+    font-weight: 600;
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+    color: #1f2937;
+}
+
+.message-bubble .text-gray-800 h1 {
+    font-size: 1.5rem;
+    border-bottom: 2px solid #e5e7eb;
+    padding-bottom: 0.5rem;
+}
+
+.message-bubble .text-gray-800 h2 {
+    font-size: 1.25rem;
+    color: #374151;
+}
+
+.message-bubble .text-gray-800 h3 {
+    font-size: 1.125rem;
+    color: #4b5563;
+}
+
+.message-bubble .text-gray-800 h4,
+.message-bubble .text-gray-800 h5,
+.message-bubble .text-gray-800 h6 {
+    font-size: 1rem;
+    color: #6b7280;
+}
+
+/* Remove margin from first header */
+.message-bubble .text-gray-800 h1:first-child,
+.message-bubble .text-gray-800 h2:first-child,
+.message-bubble .text-gray-800 h3:first-child,
+.message-bubble .text-gray-800 h4:first-child,
+.message-bubble .text-gray-800 h5:first-child,
+.message-bubble .text-gray-800 h6:first-child {
+    margin-top: 0;
+}
+
+/* Paragraphs */
+.message-bubble .text-gray-800 p {
+    margin-bottom: 1rem;
+}
+
+.message-bubble .text-gray-800 p:last-child {
+    margin-bottom: 0;
+}
+
+/* Links */
+.message-bubble .text-gray-800 a {
+    color: #2563eb;
+    text-decoration: underline;
+    font-weight: 500;
+    transition: color 0.2s ease;
+}
+
+.message-bubble .text-gray-800 a:hover {
+    color: #1d4ed8;
+    text-decoration: none;
+    background-color: rgba(37, 99, 235, 0.1);
+    padding: 2px 4px;
+    border-radius: 3px;
+}
+
+.message-bubble .text-gray-800 a:visited {
+    color: #7c3aed;
+}
+
+/* YouTube links special styling */
+.message-bubble .text-gray-800 a[href*="youtube.com"] {
+    color: #dc2626;
+    text-decoration: none;
+    border-bottom: 2px dashed #dc2626;
+}
+
+.message-bubble .text-gray-800 a[href*="youtube.com"]:after {
+    content: " →";
+    font-size: 0.9em;
+    color: #dc2626;
+    margin-left: 2px;
+}
+
+/* Lists */
+.message-bubble .text-gray-800 ul,
+.message-bubble .text-gray-800 ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+.message-bubble .text-gray-800 ul {
+    list-style-type: disc;
+}
+
+.message-bubble .text-gray-800 ol {
+    list-style-type: decimal;
+}
+
+.message-bubble .text-gray-800 li {
+    margin-bottom: 0.5rem;
+    line-height: 1.5;
+}
+
+.message-bubble .text-gray-800 li:last-child {
+    margin-bottom: 0;
+}
+
+/* Nested lists */
+.message-bubble .text-gray-800 ul ul,
+.message-bubble .text-gray-800 ol ol,
+.message-bubble .text-gray-800 ul ol,
+.message-bubble .text-gray-800 ol ul {
+    margin: 0.5rem 0;
+    padding-left: 1.25rem;
+}
+
+.message-bubble .text-gray-800 ul ul {
+    list-style-type: circle;
+}
+
+.message-bubble .text-gray-800 ul ul ul {
+    list-style-type: square;
+}
+
+/* Code blocks and inline code */
+.message-bubble .text-gray-800 code {
+    background-color: #f3f4f6;
+    color: #1f2937;
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.875rem;
+}
+
+.message-bubble .text-gray-800 pre {
+    background-color: #1f2937;
+    color: #f9fafb;
+    padding: 1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 1rem 0;
+    border: 1px solid #374151;
+}
+
+.message-bubble .text-gray-800 pre code {
+    background: none;
+    color: inherit;
+    padding: 0;
+    font-size: 0.875rem;
+}
+
+/* Blockquotes */
+.message-bubble .text-gray-800 blockquote {
+    border-left: 4px solid #6b7280;
+    margin: 1rem 0;
+    padding-left: 1rem;
+    color: #6b7280;
+    font-style: italic;
+}
+
+/* Tables */
+.message-bubble .text-gray-800 table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.875rem;
+}
+
+.message-bubble .text-gray-800 th,
+.message-bubble .text-gray-800 td {
+    border: 1px solid #d1d5db;
+    padding: 0.5rem;
+    text-align: left;
+}
+
+.message-bubble .text-gray-800 th {
+    background-color: #f3f4f6;
+    font-weight: 600;
+    color: #374151;
+}
+
+.message-bubble .text-gray-800 tr:nth-child(even) {
+    background-color: #f9fafb;
+}
+
+/* Horizontal rules */
+.message-bubble .text-gray-800 hr {
+    border: none;
+    border-top: 2px solid #e5e7eb;
+    margin: 1.5rem 0;
+}
+
+/* Strong and emphasis */
+.message-bubble .text-gray-800 strong,
+.message-bubble .text-gray-800 b {
+    font-weight: 600;
+    color: #1f2937;
+}
+
+.message-bubble .text-gray-800 em,
+.message-bubble .text-gray-800 i {
+    font-style: italic;
+    color: #4b5563;
+}
+
+/* Images */
+.message-bubble .text-gray-800 img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 6px;
+    margin: 0.5rem 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Status panel styling */
+.status-panel {
+    margin-left: 44px; /* Align with message content */
+}
+
+.status-panel .bg-gray-50 {
+    border: 1px solid #e5e7eb;
+    transition: all 0.2s ease;
+}
+
+.status-panel .bg-gray-50:hover {
+    border-color: #d1d5db;
+    background-color: #f9fafb;
+}
+
+/* Status log styling */
+.status-panel #statusLog {
+    max-height: 120px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 #f1f5f9;
+}
+
+.status-panel #statusLog::-webkit-scrollbar {
+    width: 4px;
+}
+
+.status-panel #statusLog::-webkit-scrollbar-track {
+    background: #f1f5f9;
+    border-radius: 2px;
+}
+
+.status-panel #statusLog::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 2px;
+}
+
+.status-panel #statusLog::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+
+/* Pulse animation for processing indicator */
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.animate-pulse {
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Button hover effects */
+#sendButton:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+}
+
+#clearChat:hover {
+    transform: translateY(-1px);
+}
+
+/* Input focus effects */
+#queryInput:focus {
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+/* Status panel transitions */
+.status-panel button {
+    transition: all 0.2s ease;
+}
+
+.status-panel button:hover {
+    transform: scale(1.05);
+}
+
+/* Responsive improvements */
+@media (max-width: 768px) {
+    .chat-container {
+        height: calc(100vh - 250px);
+    }
+    
+    .container {
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+    
+    .status-panel {
+        margin-left: 36px; /* Smaller offset on mobile */
+    }
+    
+    .status-panel #statusLog {
+        max-height: 80px;
+    }
+    
+    /* Adjust text size on mobile for better readability */
+    .message-bubble .text-gray-800 {
+        font-size: 0.9rem;
+    }
+    
+    .message-bubble .text-gray-800 table {
+        font-size: 0.8rem;
+    }
+    
+    /* Make YouTube links more subtle on mobile */
+    .message-bubble .text-gray-800 a[href*="youtube.com"] {
+        display: inline;
+        margin: 0;
+    }
+}
+
+@media (max-width: 640px) {
+    .status-panel {
+        margin-left: 0;
+        margin-top: 8px;
+    }
+    
+    /* Further mobile optimizations */
+    .message-bubble .text-gray-800 ul,
+    .message-bubble .text-gray-800 ol {
+        padding-left: 1.25rem;
+    }
+    
+    .message-bubble .text-gray-800 pre {
+        padding: 0.75rem;
+        font-size: 0.8rem;
+    }
+}
+
+/* Dark mode support (optional) */
+@media (prefers-color-scheme: dark) {
+    .status-panel .bg-gray-50 {
+        background-color: #1f2937;
+        border-color: #374151;
+        color: #d1d5db;
+    }
+    
+    .status-panel .bg-gray-50:hover {
+        background-color: #111827;
+        border-color: #4b5563;
+    }
+    
+    /* Dark mode for message content */
+    .message-bubble .text-gray-800 h1,
+    .message-bubble .text-gray-800 h2,
+    .message-bubble .text-gray-800 h3,
+    .message-bubble .text-gray-800 h4,
+    .message-bubble .text-gray-800 h5,
+    .message-bubble .text-gray-800 h6 {
+        color: #f9fafb;
+    }
+    
+    .message-bubble .text-gray-800 a {
+        color: #60a5fa;
+    }
+    
+    .message-bubble .text-gray-800 a:hover {
+        color: #93c5fd;
+        background-color: rgba(96, 165, 250, 0.1);
+    }
+    
+    .message-bubble .text-gray-800 code {
+        background-color: #374151;
+        color: #f9fafb;
+    }
+    
+    .message-bubble .text-gray-800 pre {
+        background-color: #111827;
+        border-color: #4b5563;
+    }
+    
+    .message-bubble .text-gray-800 th {
+        background-color: #374151;
+        color: #f9fafb;
+    }
+    
+    .message-bubble .text-gray-800 tr:nth-child(even) {
+        background-color: #1f2937;
+    }
+    
+    .message-bubble .text-gray-800 th,
+    .message-bubble .text-gray-800 td {
+        border-color: #4b5563;
+    }
+}

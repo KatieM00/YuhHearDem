@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YuhHearDem - Parliamentary Research Assistant</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <header class="gradient-bg text-white shadow-lg">
+        <div class="container mx-auto px-4 py-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-3xl font-bold">YuhHearDem</h1>
+                    <p class="text-blue-100 mt-1">AI Parliamentary Research Assistant for Barbados</p>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <div id="connectionStatus" class="flex items-center">
+                        <div class="w-3 h-3 rounded-full bg-green-400 mr-2"></div>
+                        <span class="text-sm">Connected</span>
+                    </div>
+                    <button id="clearChat" class="bg-white bg-opacity-20 hover:bg-opacity-30 px-4 py-2 rounded-lg transition-colors">Clear Chat</button>
+                </div>
+            </div>
+        </div>
+    </header>
+    
+    <div class="container mx-auto px-4 py-6">
+        <div class="bg-white rounded-lg shadow-lg overflow-hidden">
+            <div id="chatContainer" class="chat-container overflow-y-auto p-6 space-y-4">
+                <div class="message-bubble">
+                    <div class="flex items-start space-x-3">
+                        <div class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-semibold">YH</div>
+                        <div class="flex-1">
+                            <div class="bg-blue-50 rounded-lg p-4">
+                                <p class="text-gray-800">Hello! I'm YuhHearDem, your AI assistant for researching Barbados Parliament discussions. Ask me about parliamentary debates, minister statements, bills, or any topic discussed in Parliament.</p>
+                                <p class="text-gray-600 text-sm mt-2"><strong>Examples:</strong> "What did the Minister of Health say about COVID-19?" or "Recent discussions about water management"</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="border-t p-4">
+                <div class="flex space-x-3">
+                    <input type="text" id="queryInput" placeholder="Ask about parliamentary discussions, ministers, bills, or policies..." class="flex-1 border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" disabled>
+                    <button id="sendButton" class="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white px-6 py-3 rounded-lg font-semibold transition-colors disabled:cursor-not-allowed" disabled>Send</button>
+                </div>
+                <div id="inputStatus" class="text-sm text-gray-500 mt-2">Connecting to YuhHearDem service...</div>
+            </div>
+        </div>
+        
+        <div class="mt-4 text-center text-sm text-gray-500">
+            <span id="sessionInfo">Session ID: <span id="sessionId">Generating...</span> | User ID: <span id="userId">Generating...</span></span>
+            <span id="sessionStatus" class="ml-2 px-2 py-1 rounded text-xs"></span>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

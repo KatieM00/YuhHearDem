@@ -27,6 +27,10 @@ from fastapi import Request
 from pydantic import BaseModel, Field
 import uvicorn
 
+# Add markdown and BeautifulSoup imports for processing
+import markdown
+from bs4 import BeautifulSoup
+
 # Add the current directory to Python path so we can import yuhheardem_core
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -79,6 +83,49 @@ class AgentEvent(BaseModel):
     message: str
     timestamp: str
     data: Optional[Dict[str, Any]] = None
+
+def convert_markdown_to_html_and_filter_links(markdown_text: str) -> str:
+    """
+    Convert markdown to HTML and remove all links that don't contain youtube.com
+    
+    Args:
+        markdown_text: The markdown text to process
+        
+    Returns:
+        HTML string with only YouTube links preserved
+    """
+    try:
+        # Convert markdown to HTML
+        html = markdown.markdown(markdown_text, extensions=['extra', 'codehilite'])
+        
+        # Parse HTML with BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # Find all anchor tags
+        links = soup.find_all('a')
+        
+        # Process each link
+        for link in links:
+            href = link.get('href', '')
+            
+            # Check if the link contains youtube.com
+            if 'youtube.com' not in href.lower():
+                # Remove the link but keep the text content
+                link.replace_with(link.get_text())
+                logger.debug(f"Removed non-YouTube link: {href}")
+            else:
+                logger.debug(f"Preserved YouTube link: {href}")
+        
+        # Return the processed HTML
+        processed_html = str(soup)
+        logger.info(f"Converted markdown to HTML and filtered links. Original length: {len(markdown_text)}, Processed length: {len(processed_html)}")
+        
+        return processed_html
+        
+    except Exception as e:
+        logger.error(f"Error processing markdown to HTML: {e}")
+        # Fall back to original markdown text if processing fails
+        return markdown_text
 
 def format_sse_event(event_type: str, agent: str, message: str, data: Optional[Dict[str, Any]] = None) -> str:
     """Format Server-Sent Event data according to SSE protocol."""
@@ -205,8 +252,11 @@ async def process_query_with_realtime_events(query: str, user_id: str, session_i
                 if conversational_text_buffer and (pending_transfer or event_count > 1) and not conversational_response_sent:
                     logger.info(f"🎯 Sending immediate conversational response: {conversational_text_buffer[:50]}...")
                     
+                    # Convert markdown to HTML and filter links for conversational response
+                    processed_response = convert_markdown_to_html_and_filter_links(conversational_text_buffer)
+                    
                     yield format_sse_event("immediate_response", "ConversationalAgent", "Response ready", {
-                        "response": conversational_text_buffer,
+                        "response": processed_response,
                         "message_id": str(uuid.uuid4()),
                         "session_id": session_id,
                         "type": "conversational"
@@ -214,7 +264,7 @@ async def process_query_with_realtime_events(query: str, user_id: str, session_i
                     
                     conversational_response_sent = True
                     
-                    # Update conversation history with this immediate response
+                    # Update conversation history with the original text (not HTML)
                     yuhheardem_system.conversation_history.append({
                         "user": query,
                         "assistant": conversational_text_buffer
@@ -291,7 +341,10 @@ async def process_query_with_realtime_events(query: str, user_id: str, session_i
             
             message_id = str(uuid.uuid4())
 
-            # Update conversation history with the detailed research response
+            # Convert markdown to HTML and filter links for the final response
+            processed_final_response = convert_markdown_to_html_and_filter_links(final_response_text)
+
+            # Update conversation history with the original text (not HTML)
             if yuhheardem_system.conversation_history and yuhheardem_system.conversation_history[-1]["user"] == query:
                 yuhheardem_system.conversation_history[-1]["assistant"] = final_response_text
             else:
@@ -305,9 +358,9 @@ async def process_query_with_realtime_events(query: str, user_id: str, session_i
                 yuhheardem_system.conversation_history = yuhheardem_system.conversation_history[-10:]
                 logger.info("Conversation history trimmed.")
 
-            # Send final detailed response payload
+            # Send final detailed response payload with processed HTML
             yield format_sse_event("final_response", "WriterAgent", "Detailed research response ready", {
-                "response": final_response_text,
+                "response": processed_final_response,
                 "message_id": message_id,
                 "session_id": session_id,
                 "type": "research"
@@ -544,12 +597,15 @@ async def query_non_stream(request: QueryRequest):
         response_content, status_info = await yuhheardem_system.process_query(request.query)
 
         if status_info.get("success", False):
+             # Convert markdown to HTML and filter links for non-stream response
+             processed_response = convert_markdown_to_html_and_filter_links(response_content)
+             
              return QueryResponse(
                  session_id=session_id, # Use the session_id from the request or generated
                  user_id=request.user_id,
                  message_id=str(uuid.uuid4()), # Generate message ID here
                  status="success",
-                 message=response_content
+                 message=processed_response
              )
         else:
              raise HTTPException(status_code=500, detail=response_content)
