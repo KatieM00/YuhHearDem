@@ -1145,18 +1145,21 @@
             },
             
             /**
-             * Create a status panel underneath a message
+             * Create a status panel underneath a message that starts expanded
              */
             createStatusPanel: function(messageDiv) {
                 var statusPanel = document.createElement('div');
                 statusPanel.className = 'status-panel mt-2 ml-11';
                 statusPanel.innerHTML = 
                     '<div class="bg-gray-50 border border-gray-200 rounded-lg p-3">' +
-                        '<div class="flex items-center space-x-2 mb-2">' +
-                            '<div class="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>' +
-                            '<span class="text-sm font-medium text-gray-700" id="currentStatus">Processing your question...</span>' +
+                        '<div class="flex items-center justify-between mb-2">' +
+                            '<div class="flex items-center space-x-2">' +
+                                '<div class="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>' +
+                                '<span class="text-sm font-medium text-gray-700" id="currentStatus">Processing your question...</span>' +
+                            '</div>' +
+                            '<button class="text-xs text-blue-500 hover:text-blue-700" id="toggleDetails" onclick="chatApp.toggleStatusDetails(this)">Hide details</button>' +
                         '</div>' +
-                        '<div class="hidden" id="statusDetails">' +
+                        '<div class="" id="statusDetails">' +
                             '<div class="text-xs text-gray-600 space-y-1" id="statusLog"></div>' +
                         '</div>' +
                     '</div>';
@@ -1165,6 +1168,22 @@
                 this.scrollToBottom();
                 
                 return statusPanel;
+            },
+            
+            /**
+             * Toggle status details visibility
+             */
+            toggleStatusDetails: function(button) {
+                var statusDetails = button.closest('.status-panel').querySelector('#statusDetails');
+                var isHidden = statusDetails.classList.contains('hidden');
+                
+                if (isHidden) {
+                    statusDetails.classList.remove('hidden');
+                    button.textContent = 'Hide details';
+                } else {
+                    statusDetails.classList.add('hidden');
+                    button.textContent = 'Show details';
+                }
             },
             
             /**
@@ -1206,55 +1225,38 @@
                         '<span>' + message + '</span>';
                     
                     statusLog.appendChild(logEntry);
+                    
+                    // Auto-scroll the log
+                    statusLog.scrollTop = statusLog.scrollHeight;
                 }
             },
             
             /**
-             * Collapse status panel into expandable section
+             * Collapse status panel after processing is complete
              */
             collapseStatusPanel: function() {
                 if (!this.currentStatusPanel) return;
                 
                 var statusElement = this.currentStatusPanel.querySelector('#currentStatus');
                 var statusDetails = this.currentStatusPanel.querySelector('#statusDetails');
-                var statusLog = this.currentStatusPanel.querySelector('#statusLog');
+                var toggleButton = this.currentStatusPanel.querySelector('#toggleDetails');
                 
-                if (statusElement && statusDetails && statusLog) {
+                if (statusElement && statusDetails && toggleButton) {
                     // Update main status
-                    statusElement.textContent = 'Processing completed';
-                    statusElement.className = 'text-sm text-gray-600 cursor-pointer hover:text-blue-600';
+                    statusElement.textContent = 'Research completed';
+                    statusElement.className = 'text-sm text-gray-600';
                     
-                    // Remove pulsing dot and add expand icon
+                    // Remove pulsing dot and add check icon
                     var pulsingDot = this.currentStatusPanel.querySelector('.animate-pulse');
                     if (pulsingDot) {
                         pulsingDot.className = 'w-2 h-2 bg-green-500 rounded-full';
                     }
                     
-                    // Add expand/collapse functionality
-                    var toggleButton = document.createElement('button');
-                    toggleButton.className = 'ml-2 text-xs text-blue-500 hover:text-blue-700';
-                    toggleButton.textContent = 'Show details';
-                    toggleButton.onclick = function() {
-                        var isHidden = statusDetails.classList.contains('hidden');
-                        if (isHidden) {
-                            statusDetails.classList.remove('hidden');
-                            toggleButton.textContent = 'Hide details';
-                        } else {
-                            statusDetails.classList.add('hidden');
-                            toggleButton.textContent = 'Show details';
-                        }
-                    };
-                    
-                    statusElement.parentNode.appendChild(toggleButton);
-                    
-                    // Show that details are available
-                    if (statusLog.children.length > 0) {
-                        statusDetails.classList.remove('hidden');
-                        setTimeout(function() {
-                            statusDetails.classList.add('hidden');
-                            toggleButton.textContent = 'Show details';
-                        }, 3000); // Auto-collapse after 3 seconds
-                    }
+                    // Auto-collapse after a brief delay
+                    setTimeout(function() {
+                        statusDetails.classList.add('hidden');
+                        toggleButton.textContent = 'Show details';
+                    }, 2000);
                 }
                 
                 this.currentStatusPanel = null;
@@ -1265,6 +1267,7 @@
              */
             streamQuery: function(query) {
                 var self = this;
+                console.log('🚀 Starting stream query for:', query);
                 
                 fetch(this.apiBase + '/query/stream', {
                     method: 'POST',
@@ -1276,6 +1279,7 @@
                     })
                 })
                 .then(function(response) {
+                    console.log('📡 Stream response status:', response.status);
                     if (!response.ok) {
                         throw new Error('HTTP ' + response.status + ': ' + response.statusText);
                     }
@@ -1288,6 +1292,7 @@
                     function readStream() {
                         return reader.read().then(function(result) {
                             if (result.done) {
+                                console.log('🏁 Stream finished');
                                 self.collapseStatusPanel();
                                 self.isProcessing = false;
                                 self.enableInput();
@@ -1298,73 +1303,57 @@
                             var lines = buffer.split('\n');
                             buffer = lines.pop();
                             
+                            console.log('📦 Processing', lines.length, 'lines from stream');
+                            
                             for (var i = 0; i < lines.length; i++) {
                                 var line = lines[i];
+                                console.log('📝 Raw line:', line);
                                 
                                 if (line.startsWith('data: ')) {
                                     try {
                                         var eventData = JSON.parse(line.substring(6));
-                                        console.log('📡 Real-time event:', eventData);
+                                        console.log('🎯 Parsed event:', eventData);
                                         
-                                        // Safety check - ensure eventData exists
-                                        if (!eventData || !eventData.type) {
-                                            console.log('⚠️ Invalid event data, skipping');
-                                            continue;
-                                        }
-                                        
-                                        console.log('🔍 Event type check:', eventData.type, 'Panel exists:', !!self.currentStatusPanel);
-                                        
-                                        // Handle events in strict order - immediate_response first
-                                        if (eventData.type === 'immediate_response' && eventData.data && eventData.data.response) {
-                                            console.log('💬 Immediate response received:', eventData.data.response);
-                                            // Add the immediate conversational response
-                                            self.currentAssistantMessage = self.addMessage('assistant', eventData.data.response);
-                                            // Mark this message as conversational for potential replacement
-                                            self.currentAssistantMessage.setAttribute('data-response-type', 'conversational');
+                                        // Handle different event types
+                                        if (eventData.type === 'query_start') {
+                                            console.log('🚀 Query started');
+                                            if (!self.currentStatusPanel) {
+                                                // Create a simple assistant message first
+                                                self.currentAssistantMessage = self.addMessage('assistant', 'Searching parliamentary records...');
+                                                self.currentStatusPanel = self.createStatusPanel(self.currentAssistantMessage);
+                                            }
+                                            self.updateCurrentStatus('System', eventData.message);
                                             
-                                            // NOW create the status panel under the assistant's response
-                                            self.currentStatusPanel = self.createStatusPanel(self.currentAssistantMessage);
-                                            console.log('🎛️ Status panel created:', !!self.currentStatusPanel);
+                                        } else if (eventData.type === 'response_ready' && eventData.data && eventData.data.response) {
+                                            console.log('✅ Response ready, updating message');
                                             
-                                        } else if (eventData.type === 'final_response' && eventData.data && eventData.data.response) {
-                                            console.log('📝 Final response received:', eventData.data.response.substring(0, 100) + '...');
-                                            
-                                            // If we have a current conversational message, replace it with the detailed response
-                                            if (self.currentAssistantMessage && 
-                                                self.currentAssistantMessage.getAttribute('data-response-type') === 'conversational') {
+                                            // Replace or create the assistant message
+                                            if (self.currentAssistantMessage) {
                                                 self.replaceMessageContent(self.currentAssistantMessage, eventData.data.response);
-                                                self.currentAssistantMessage.setAttribute('data-response-type', 'research');
                                             } else {
-                                                // Otherwise, add as a new message
                                                 self.currentAssistantMessage = self.addMessage('assistant', eventData.data.response);
-                                                self.currentAssistantMessage.setAttribute('data-response-type', 'research');
+                                            }
+                                            
+                                            if (self.currentStatusPanel) {
+                                                self.updateCurrentStatus('YuhHearDem', 'Response completed');
                                             }
                                             
                                         } else if (eventData.type === 'error') {
                                             console.log('❌ Error event:', eventData.message);
-                                            self.addMessage('assistant', 'Error: ' + eventData.message);
-                                            
-                                        } else if (eventData.type === 'stream_complete') {
-                                            // Don't show stream_complete as a status update
-                                            console.log('🏁 Stream completed');
+                                            if (self.currentAssistantMessage) {
+                                                self.replaceMessageContent(self.currentAssistantMessage, 'Error: ' + eventData.message);
+                                            } else {
+                                                self.addMessage('assistant', 'Error: ' + eventData.message);
+                                            }
                                             
                                         } else {
-                                            console.log('🔄 Processing other event type:', eventData.type);
-                                            // For all other event types - update status if we have a panel
+                                            console.log('🔄 Other event:', eventData.type, eventData.message);
                                             if (self.currentStatusPanel && eventData.message) {
-                                                console.log('📝 Updating status:', eventData.type, eventData.message);
                                                 self.updateCurrentStatus(eventData.agent || 'System', eventData.message);
-                                            } else {
-                                                console.log('⏸️ Skipping status update:', {
-                                                    type: eventData.type,
-                                                    message: eventData.message,
-                                                    hasPanel: !!self.currentStatusPanel,
-                                                    hasMessage: !!eventData.message
-                                                });
                                             }
                                         }
                                     } catch (e) {
-                                        console.error('❌ Error parsing SSE event:', e, 'Line:', line);
+                                        console.error('❌ Error parsing event:', e, 'Line:', line);
                                     }
                                 }
                             }
@@ -1376,7 +1365,7 @@
                     return readStream();
                 })
                 .catch(function(error) {
-                    console.error('Query failed:', error);
+                    console.error('❌ Stream query failed:', error);
                     self.addMessage('assistant', 'Sorry, I encountered an error: ' + error.message);
                     self.collapseStatusPanel();
                     self.isProcessing = false;

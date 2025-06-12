@@ -18,10 +18,9 @@ from typing import Dict, List, Any, Optional, Tuple, Set, AsyncGenerator
 from contextlib import asynccontextmanager
 
 # FastAPI imports
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
-from fastapi import Request
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -501,40 +500,52 @@ class ParliamentarySystem:
             description="AI assistant for Barbados Parliament information",
             instruction="""You are YuhHearDem, a friendly AI assistant helping people understand Barbados Parliament.
 
-## RESPONSE APPROACH
-- For general questions about Parliament/government: Answer directly using your knowledge
-- For specific parliamentary topics or recent events: Use search_parliament_hybrid tool
-- When user changes topics significantly: Use clear_conversation_context tool first
+## CORE BEHAVIOR
+- ALWAYS search for specific parliamentary information when users ask about topics, ministers, policies, or issues
+- Use search_parliament_hybrid tool for ANY question about parliamentary matters
+- Start responses with "YuhHearDem!" 
 
-## WHEN TO SEARCH
-- User asks about specific ministers, bills, debates, or parliamentary sessions  
-- Questions about recent parliamentary activities or current events
-- Requests for specific details, quotes, or sources
-- Topics like water infrastructure, education budget, healthcare policy, etc.
+## WHEN TO SEARCH (ALWAYS search for these):
+- Any mention of: water, infrastructure, education, health, budget, policies, economy, agriculture, tourism
+- Questions about ministers, MPs, or government officials
+- Parliamentary debates, sessions, bills, or legislation
+- Recent events, announcements, or government decisions
+- Specific topics like "water issues", "education funding", "healthcare policy"
+- ANY question about what happened in parliament or what someone said
 
-## SEARCH STRATEGY
-- Use specific, focused search terms
-- If first search doesn't find much, try related terms
-- Extract key facts and video sources from search results
+## SEARCH FIRST APPROACH
+For questions about parliamentary topics:
+1. IMMEDIATELY use search_parliament_hybrid tool with relevant keywords
+2. Extract key information from search results
+3. Provide response with specific details and sources
+4. Include YouTube links with timestamps when available
 
-## RESPONSE STYLE  
-- Start with "YuhHearDem!" for greetings
-- Be conversational and approachable
-- When citing parliamentary sources, include video links with timestamps like:
-  "According to the [March 5, 2024 Parliamentary Session](https://www.youtube.com/watch?v=pyKuPiXNDDo&t=240s), the Minister announced..."
-- If search finds limited info, acknowledge what was found and suggest related topics
+## SEARCH PARAMETERS
+- Use specific search terms related to the topic
+- Set limit between 5-8 for good coverage
+- Use 2-3 hops to get related information
 
-## CONTEXT MANAGEMENT
-- Use clear_conversation_context when user switches from one topic (like water) to completely different topic (like education)
-- Don't clear context for follow-up questions on the same topic
+## RESPONSE FORMAT
+- Start with "YuhHearDem!"
+- Provide specific information found in search
+- Include video sources like: "According to the [Session Title](https://youtube.com/watch?v=ID&t=120s)..."
+- If search finds limited results, acknowledge and suggest related searches
 
-Remember: You're helping regular citizens understand Parliament. Keep it real, keep it clear!""",
+## EXAMPLE BEHAVIOR
+User: "Tell me about water issues"
+Action: IMMEDIATELY call search_parliament_hybrid(query="water issues infrastructure", limit=6, hops=2)
+Response: Start with "YuhHearDem!" then provide findings from the search
+
+User: "What did the Prime Minister say?"
+Action: IMMEDIATELY call search_parliament_hybrid(query="Prime Minister statements", limit=5, hops=2)
+
+Remember: When in doubt, SEARCH FIRST, then respond with the findings! NEVER respond without searching for parliamentary topics.""",
             tools=[
                 FunctionTool(search_parliament_hybrid),
                 FunctionTool(clear_conversation_context)
             ],
             generate_content_config=GenerateContentConfig(
-                temperature=0.7,
+                temperature=0.1,  # Very low temperature for consistent tool use
                 max_output_tokens=1000
             )
         )
@@ -654,6 +665,13 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Mount static files and templates
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+# Setup templates (assumes templates/index.html exists)
+templates = Jinja2Templates(directory="templates")
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -705,9 +723,14 @@ async def process_query_with_events(query: str, user_id: str, session_id: str):
         logger.error(f"Query processing error: {e}")
         yield format_sse_event("error", "System", f"Error processing query: {str(e)}")
 
-@app.get("/")
-async def root():
-    """Root endpoint."""
+@app.get("/", response_class=HTMLResponse)
+async def root(request: Request):
+    """Serve the web interface."""
+    return templates.TemplateResponse("index.html", {"request": request})
+
+@app.get("/api")
+async def api_info():
+    """API information endpoint."""
     return {
         "message": "YuhHearDem - Parliamentary Research API with ADK",
         "status": "running",
