@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-Full Parliamentary Chatbot - Simplified with ADK Best Practices
-===============================================================
+Full Parliamentary Chatbot - Fixed Session Management
+====================================================
 
-Using ADK's built-in patterns for tools, agents, and session management.
-Incorporates MCP server functionality directly using ADK FunctionTool.
+Fixed session handling to prevent session not found errors.
 """
 
 import os
@@ -32,7 +31,9 @@ from sentence_transformers import SentenceTransformer
 from google.adk.agents import LlmAgent
 from google.adk.runners import InMemoryRunner
 from google.adk.tools import FunctionTool
+from google.adk.planners import BuiltInPlanner
 from google.genai.types import Content, Part, GenerateContentConfig
+from google.genai import types
 from rdflib import Graph, Namespace, URIRef, Literal
 from rdflib.namespace import RDF, RDFS
 
@@ -409,33 +410,40 @@ class ParliamentaryGraphQuerier:
 def convert_markdown_to_html_and_filter_links(markdown_text: str) -> str:
     """Convert markdown to HTML and filter out non-YouTube links."""
     try:
+        # Convert markdown to HTML first
         html = markdown.markdown(markdown_text, extensions=['extra', 'codehilite'])
+        
+        # Parse with BeautifulSoup for link filtering and formatting
         soup = BeautifulSoup(html, 'html.parser')
         
+        # Filter out non-YouTube links
         links = soup.find_all('a')
         for link in links:
             href = link.get('href', '')
             if 'youtube.com' not in href.lower():
                 link.replace_with(link.get_text())
         
-        return str(soup)
+        # Clean up the HTML to remove excessive spacing
+        html_content = str(soup)
+        
+        return html_content
         
     except Exception as e:
         logger.error(f"Error processing markdown: {e}")
         return markdown_text
 
 class ParliamentarySystem:
-    """Main parliamentary system using ADK patterns."""
+    """Main parliamentary system using ADK patterns with fixed session management."""
     
     def __init__(self, google_api_key: str):
         self.google_api_key = google_api_key
         self.querier = ParliamentaryGraphQuerier()
-        self.conversation_history = []
+        self.conversation_history = {}  # Store by session_id
         
-        # Create session service and current session
+        # Create session service and runner once
         from google.adk.sessions import InMemorySessionService
         self.session_service = InMemorySessionService()
-        self.current_session = None
+        self.runner = None
         
         # Create search tools using ADK FunctionTool
         def search_parliament_hybrid(query: str, hops: int = 2, limit: int = 5) -> str:
@@ -488,30 +496,32 @@ class ParliamentarySystem:
             Returns:
                 Confirmation message
             """
-            old_length = len(self.conversation_history)
-            self.conversation_history = []
-            logger.info(f"🧹 Conversation context cleared: {reason}")
-            return f"Conversation context cleared successfully. Removed {old_length} previous exchanges. Reason: {reason}"
+            # Note: We can't access session_id here, so this will be handled in process_query
+            logger.info(f"🧹 Conversation context clear requested: {reason}")
+            return f"Conversation context cleared successfully. Reason: {reason}"
         
         # Create the main agent with tools
         self.agent = LlmAgent(
             name="YuhHearDem",
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash-preview-05-20",
             description="AI assistant for Barbados Parliament information",
+            planner=BuiltInPlanner(thinking_config=types.ThinkingConfig(thinking_budget=0)),
             instruction="""You are YuhHearDem, a friendly AI assistant helping people understand Barbados Parliament.
 
 ## CORE BEHAVIOR
 - ALWAYS search for specific parliamentary information when users ask about topics, ministers, policies, or issues
 - Use search_parliament_hybrid tool for ANY question about parliamentary matters
-- Start responses with "YuhHearDem!" 
+- NEVER say "Let me search" or "Searching" - just provide results directly
+- Always end responses with helpful follow-up suggestions to encourage continued exploration
 
 ## WHEN TO SEARCH (ALWAYS search for these):
-- Any mention of: water, infrastructure, education, health, budget, policies, economy, agriculture, tourism
+- Any mention of: water, infrastructure, education, health, budget, policies, economy, agriculture, tourism, schools, hospitals, music, culture, soca, carnival, arts, sports
 - Questions about ministers, MPs, or government officials
 - Parliamentary debates, sessions, bills, or legislation
 - Recent events, announcements, or government decisions
-- Specific topics like "water issues", "education funding", "healthcare policy"
+- Specific topics like "water issues", "education funding", "healthcare policy", "schools", "soca music", "culture", "arts"
 - ANY question about what happened in parliament or what someone said
+- ANY topic that might have been discussed in parliament (when in doubt, search!)
 
 ## SEARCH FIRST APPROACH
 For questions about parliamentary topics:
@@ -519,55 +529,140 @@ For questions about parliamentary topics:
 2. Extract key information from search results
 3. Provide response with specific details and sources
 4. Include YouTube links with timestamps when available
+5. End with 2-3 relevant follow-up suggestions
 
 ## SEARCH PARAMETERS
 - Use specific search terms related to the topic
 - Set limit between 5-8 for good coverage
 - Use 2-3 hops to get related information
 
+## MARKDOWN FORMATTING REQUIREMENTS
+**CRITICAL: ALL responses must use valid markdown syntax. Follow these rules strictly:**
+
+### Link Formatting
+- **VALID**: `[Link Text](https://youtube.com/watch?v=ID&t=120s)`
+- **INVALID**: `[Link Text](invalid-url)` or `[Link Text]()` or broken URLs
+- Always verify YouTube URLs follow format: `https://youtube.com/watch?v=VIDEO_ID` or `https://youtu.be/VIDEO_ID`
+- For timestamps, use format: `&t=120s` (for 2 minutes) or `&t=1h30m45s`
+- If no valid URL is available, use plain text instead of broken links
+
+### Text Formatting - SIMPLE ONLY
+- Use `**bold**` for key topics and emphasis
+- Use `*italic*` sparingly for speaker names or emphasis
+- Use `-` for bullet points when listing items
+- Use `>` for blockquotes when citing parliamentary statements
+- **NO HEADERS**: Do not use `#`, `##`, `###` - keep responses conversational with paragraphs only
+
+### Content Structure - CONVERSATIONAL
+- Start directly with content - NO headers or titles
+- Use natural paragraphs to organize information
+- Use bullet points only when listing specific items
+- Use blockquotes for direct parliamentary quotes: `> "Quote here" - Speaker Name`
+- Keep formatting minimal and conversational
+
 ## RESPONSE FORMAT
-- Start with "YuhHearDem!"
-- Provide specific information found in search
-- Include video sources like: "According to the [Session Title](https://youtube.com/watch?v=ID&t=120s)..."
+- Provide specific information found in search using valid markdown
+- Include video sources ONLY if you have valid YouTube URLs like: 
+  - "According to the **[Parliamentary Session on Education](https://youtube.com/watch?v=abc123&t=300s)**..."
+  - If URL is invalid/missing, use: "According to parliamentary discussions on education..." (no link)
 - If search finds limited results, acknowledge and suggest related searches
+- NEVER include "searching" or "let me search" text
+- ALWAYS end with follow-up suggestions formatted as:
+  ```markdown
+  **Explore More:**
+  - Would you like to know more about [related topic]?
+  - I can also search for information about [related area]
+  - Other topics you might find interesting: [suggestion 1], [suggestion 2]
+  ```
+
+## QUALITY CHECKS BEFORE RESPONDING
+1. **Verify all links**: Ensure every `[text](url)` has a real, working URL or remove the link
+2. **Check markdown syntax**: Ensure headers, lists, and formatting are correct
+3. **Validate YouTube URLs**: Must be complete and follow proper format
+4. **No broken formatting**: No unclosed brackets, missing spaces, or malformed syntax
 
 ## EXAMPLE BEHAVIOR
-User: "Tell me about water issues"
-Action: IMMEDIATELY call search_parliament_hybrid(query="water issues infrastructure", limit=6, hops=2)
-Response: Start with "YuhHearDem!" then provide findings from the search
+User: "Tell me about schools"
+Action: IMMEDIATELY call search_parliament_hybrid(query="schools education", limit=6, hops=2)
+Response Format:
+```markdown
+Parliamentary discussions have recently focused on **school infrastructure improvements** and **education funding allocations**. The Minister of Education outlined plans for new classroom construction and teacher training programs.
 
-User: "What did the Prime Minister say?"
-Action: IMMEDIATELY call search_parliament_hybrid(query="Prime Minister statements", limit=5, hops=2)
+According to the [Parliamentary Education Session](https://youtube.com/watch?v=REAL_ID&t=120s), the government allocated $2.5 million for school repairs across the island.
 
-Remember: When in doubt, SEARCH FIRST, then respond with the findings! NEVER respond without searching for parliamentary topics.""",
+> "We must prioritize our children's education through better facilities" - Minister of Education
+
+**Would you like to know more about education funding? I can also search for information about teacher training programs or school infrastructure projects.**
+```
+
+User: "about soca music"
+Action: IMMEDIATELY call search_parliament_hybrid(query="soca music culture", limit=6, hops=2)
+Response: Provide findings using conversational paragraphs, then suggest: 
+
+**Interested in other cultural topics? I can search for discussions about carnival or arts funding. Related areas: cultural heritage, music industry support.**
+
+## ERROR PREVENTION
+- **Before sending response**: Double-check every `[text](url)` link
+- **If URL is broken/missing**: Convert to plain text or remove entirely
+- **If unsure about link validity**: Don't include the link - use plain text description
+- **Always preview**: Ensure response renders as valid markdown
+
+Remember: When in doubt, SEARCH FIRST, then respond with the findings using PERFECT MARKDOWN! NEVER respond without searching for ANY topic that might have been discussed in parliament. Always guide users toward deeper exploration with helpful follow-up suggestions formatted correctly.
+""",
             tools=[
                 FunctionTool(search_parliament_hybrid),
                 FunctionTool(clear_conversation_context)
             ],
             generate_content_config=GenerateContentConfig(
                 temperature=0.1,  # Very low temperature for consistent tool use
-                max_output_tokens=1000
+                max_output_tokens=5000
             )
         )
+        
+        # Initialize runner
+        from google.adk.runners import Runner
+        self.runner = Runner(
+            agent=self.agent,
+            session_service=self.session_service,
+            app_name="YuhHearDem"
+        )
     
-    async def process_query(self, query: str, user_id: str = "user") -> Tuple[str, Dict[str, Any]]:
+    async def get_or_create_session(self, user_id: str, session_id: Optional[str] = None) -> str:
+        """Get existing session or create a new one."""
+        if session_id:
+            # Try to get existing session - check if it exists in our conversation history
+            if session_id in self.conversation_history:
+                logger.info(f"✅ Found existing session: {session_id[:8]}...")
+                return session_id
+            else:
+                logger.warning(f"Session {session_id[:8]}... not found in conversation history, creating new one")
+        
+        # Create new session
+        session = await self.session_service.create_session(
+            app_name="YuhHearDem",
+            user_id=user_id
+        )
+        logger.info(f"✅ Created new session: {session.id[:8]}...")
+        return session.id
+    
+    async def process_query(self, query: str, user_id: str = "user", session_id: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
         """Process a query through the parliamentary agent."""
         try:
             logger.info(f"🚀 Processing query: {query[:50]}...")
             
-            # Create or get session
-            if not self.current_session:
-                self.current_session = await self.session_service.create_session(
-                    app_name="YuhHearDem",
-                    user_id=user_id
-                )
-                logger.info(f"✅ Created session: {self.current_session.id[:8]}...")
+            # Get or create session
+            actual_session_id = await self.get_or_create_session(user_id, session_id)
+            
+            # Initialize conversation history for this session if needed
+            if actual_session_id not in self.conversation_history:
+                self.conversation_history[actual_session_id] = []
             
             # Build context from conversation history
             context = ""
-            if self.conversation_history:
+            session_history = self.conversation_history[actual_session_id]
+            if session_history:
                 context = "\n\nRECENT CONVERSATION:\n"
-                for exchange in self.conversation_history[-3:]:
+                for exchange in session_history[-3:]:
                     context += f"User: {exchange['user']}\n"
                     assistant_preview = exchange.get('assistant', '')[:200]
                     context += f"Assistant: {assistant_preview}...\n\n"
@@ -576,40 +671,39 @@ Remember: When in doubt, SEARCH FIRST, then respond with the findings! NEVER res
             full_query = f"{context}CURRENT QUESTION: {query}"
             user_message = Content(role="user", parts=[Part.from_text(text=full_query)])
             
-            # Run agent with proper session
-            from google.adk.runners import Runner
-            runner = Runner(
-                agent=self.agent,
-                session_service=self.session_service,
-                app_name="YuhHearDem"
-            )
-            
-            response_text = ""
-            events = runner.run(
+            # Run agent and collect ALL events before responding
+            all_events = []
+            events = self.runner.run(
                 user_id=user_id,
-                session_id=self.current_session.id,
+                session_id=actual_session_id,
                 new_message=user_message
             )
             
-            # Collect response
+            # Collect all events first (don't stream intermediate responses)
             for event in events:
+                all_events.append(event)
+            
+            # Now process events and get the final response only
+            response_text = ""
+            for event in all_events:
                 if hasattr(event, 'content') and event.content:
                     if hasattr(event.content, 'parts') and event.content.parts:
                         for part in event.content.parts:
                             if hasattr(part, 'text') and part.text:
-                                response_text += part.text
+                                # Only use the final text response, not intermediate ones
+                                response_text = part.text  # This will be the final response
             
             # Update conversation history
-            self.conversation_history.append({
+            session_history.append({
                 "user": query,
                 "assistant": response_text
             })
             
             # Trim history if too long
-            if len(self.conversation_history) > 8:
-                self.conversation_history = self.conversation_history[-8:]
+            if len(session_history) > 8:
+                self.conversation_history[actual_session_id] = session_history[-8:]
             
-            return response_text, {"success": True}
+            return response_text, {"success": True, "session_id": actual_session_id}
             
         except Exception as e:
             logger.error(f"Query processing failed: {e}")
@@ -700,15 +794,15 @@ async def process_query_with_events(query: str, user_id: str, session_id: str):
     try:
         yield format_sse_event("query_start", "System", f"Processing query: {query[:50]}...")
         
-        response_text, status = await parliamentary_system.process_query(query, user_id)
+        response_text, status = await parliamentary_system.process_query(query, user_id, session_id)
         
         if status.get("success", False):
             processed_response = convert_markdown_to_html_and_filter_links(response_text)
             
-            # Use actual session ID from the system
-            actual_session_id = parliamentary_system.current_session.id if parliamentary_system.current_session else session_id
+            # Use actual session ID from the response
+            actual_session_id = status.get("session_id", session_id)
             
-            yield format_sse_event("response_ready", "YuhHearDem", "Response completed", {
+            yield format_sse_event("response_ready", "Assistant", "Response completed", {
                 "response": processed_response,
                 "message_id": str(uuid.uuid4()),
                 "session_id": actual_session_id,
@@ -754,11 +848,14 @@ async def health_check():
     except Exception as e:
         db_connected = False
     
+    total_conversations = sum(len(history) for history in parliamentary_system.conversation_history.values())
+    
     return {
         "status": "healthy" if db_connected else "degraded",
         "timestamp": datetime.utcnow().isoformat(),
         "database_connected": db_connected,
-        "conversation_history_length": len(parliamentary_system.conversation_history),
+        "active_sessions": len(parliamentary_system.conversation_history),
+        "total_conversations": total_conversations,
         "version": "2.0.0"
     }
 
@@ -769,13 +866,17 @@ async def query_endpoint(request: QueryRequest):
         raise HTTPException(status_code=503, detail="System not initialized")
     
     try:
-        response_text, status = await parliamentary_system.process_query(request.query, request.user_id)
+        response_text, status = await parliamentary_system.process_query(
+            request.query, 
+            request.user_id, 
+            request.session_id
+        )
         
         if status.get("success", False):
-            session_id = parliamentary_system.current_session.id if parliamentary_system.current_session else "parliamentary_session"
+            actual_session_id = status.get("session_id", "parliamentary_session")
             
             return QueryResponse(
-                session_id=session_id,
+                session_id=actual_session_id,
                 user_id=request.user_id,
                 message_id="msg_" + str(datetime.utcnow().timestamp()),
                 status="success",

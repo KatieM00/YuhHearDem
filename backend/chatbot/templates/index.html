@@ -7,14 +7,9 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
-        /* YuhHearDem Styles */
-
+        /* Clean YuhHearDem Styles */
         .message-bubble {
             animation: slideIn 0.3s ease-out;
-        }
-
-        .status-panel {
-            animation: slideIn 0.2s ease-out;
         }
 
         @keyframes slideIn {
@@ -36,113 +31,80 @@
             height: calc(100vh - 280px);
         }
 
-        /* Connection status indicators */
-        .connection-status-connected {
-            background-color: #10b981;
-            animation: pulse 2s infinite;
+        /* Thinking dots animation */
+        .thinking-dots-container {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            padding: 1rem 0;
+            margin-left: 44px;
         }
 
-        .connection-status-disconnected {
-            background-color: #ef4444;
+        .thinking-dots {
+            display: flex;
+            align-items: center;
+            gap: 4px;
         }
 
-        /* Message styling improvements */
-        .message-bubble .bg-blue-50 {
-            border-left: 4px solid #3b82f6;
+        .thinking-dot {
+            width: 8px;
+            height: 8px;
+            background-color: #64748b;
+            border-radius: 50%;
+            animation: thinking-bounce 1.4s ease-in-out infinite;
         }
 
-        .message-bubble .bg-green-50 {
-            border-left: 4px solid #10b981;
+        .thinking-dot:nth-child(1) { animation-delay: 0s; }
+        .thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+        .thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes thinking-bounce {
+            0%, 60%, 100% {
+                transform: translateY(0);
+                opacity: 0.5;
+            }
+            30% {
+                transform: translateY(-12px);
+                opacity: 1;
+            }
         }
 
-        /* HTML Content Styling within Assistant Messages */
-        .message-bubble .text-gray-800 {
-            line-height: 1.6;
+        .fade-in {
+            animation: fadeIn 0.3s ease-out;
         }
 
-        /* Headers in assistant messages */
-        .message-bubble .text-gray-800 h1,
-        .message-bubble .text-gray-800 h2,
-        .message-bubble .text-gray-800 h3,
-        .message-bubble .text-gray-800 h4,
-        .message-bubble .text-gray-800 h5,
-        .message-bubble .text-gray-800 h6 {
-            font-weight: 600;
-            margin-top: 1.5rem;
-            margin-bottom: 0.75rem;
-            color: #1f2937;
+        .fade-out {
+            animation: fadeOut 0.3s ease-out forwards;
         }
 
-        .message-bubble .text-gray-800 h1 {
-            font-size: 1.5rem;
-            border-bottom: 2px solid #e5e7eb;
-            padding-bottom: 0.5rem;
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
-        .message-bubble .text-gray-800 h2 {
-            font-size: 1.25rem;
-            color: #374151;
+        @keyframes fadeOut {
+            from {
+                opacity: 1;
+                transform: translateY(0);
+            }
+            to {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
         }
 
-        .message-bubble .text-gray-800 h3 {
-            font-size: 1.125rem;
-            color: #4b5563;
-        }
-
-        .message-bubble .text-gray-800 h4,
-        .message-bubble .text-gray-800 h5,
-        .message-bubble .text-gray-800 h6 {
-            font-size: 1rem;
-            color: #6b7280;
-        }
-
-        /* Remove margin from first header */
-        .message-bubble .text-gray-800 h1:first-child,
-        .message-bubble .text-gray-800 h2:first-child,
-        .message-bubble .text-gray-800 h3:first-child,
-        .message-bubble .text-gray-800 h4:first-child,
-        .message-bubble .text-gray-800 h5:first-child,
-        .message-bubble .text-gray-800 h6:first-child {
-            margin-top: 0;
-        }
-
-        /* Paragraphs */
-        .message-bubble .text-gray-800 p {
-            margin-bottom: 1rem;
-        }
-
-        .message-bubble .text-gray-800 p:last-child {
-            margin-bottom: 0;
-        }
-
-        /* Links */
-        .message-bubble .text-gray-800 a {
-            color: #2563eb;
-            text-decoration: underline;
-            font-weight: 500;
-            transition: color 0.2s ease;
-            cursor: pointer;
-        }
-
-        .message-bubble .text-gray-800 a:hover {
-            color: #1d4ed8;
-            text-decoration: none;
-            background-color: rgba(37, 99, 235, 0.1);
-            padding: 2px 4px;
-            border-radius: 3px;
-        }
-
-        .message-bubble .text-gray-800 a:visited {
-            color: #7c3aed;
-        }
-
-        /* YouTube links special styling */
+        /* YouTube link styling */
         .message-bubble .text-gray-800 a[href*="youtube.com"],
         .message-bubble .text-gray-800 a[href*="youtu.be"] {
             color: #dc2626;
             text-decoration: none;
             border-bottom: 2px dashed #dc2626;
-            position: relative;
             transition: all 0.2s ease;
         }
 
@@ -160,7 +122,55 @@
             margin-left: 2px;
         }
 
-        /* Lists */
+        /* Enhanced markdown formatting */
+        .message-bubble .text-gray-800 {
+            line-height: 1.7;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+
+        /* Paragraphs */
+        .message-bubble .text-gray-800 p {
+            margin-bottom: 1rem;
+            line-height: 1.7;
+        }
+
+        .message-bubble .text-gray-800 p:last-child {
+            margin-bottom: 0;
+        }
+
+        /* Headers */
+        .message-bubble .text-gray-800 h1,
+        .message-bubble .text-gray-800 h2,
+        .message-bubble .text-gray-800 h3,
+        .message-bubble .text-gray-800 h4 {
+            font-weight: 700;
+            color: #1f2937;
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+            line-height: 1.4;
+        }
+
+        .message-bubble .text-gray-800 h1:first-child,
+        .message-bubble .text-gray-800 h2:first-child,
+        .message-bubble .text-gray-800 h3:first-child,
+        .message-bubble .text-gray-800 h4:first-child {
+            margin-top: 0;
+        }
+
+        .message-bubble .text-gray-800 h1 { font-size: 1.5rem; }
+        .message-bubble .text-gray-800 h2 { font-size: 1.3rem; }
+        .message-bubble .text-gray-800 h3 { font-size: 1.1rem; }
+        .message-bubble .text-gray-800 h4 { font-size: 1rem; }
+
+        /* Bold text - INLINE not block */
+        .message-bubble .text-gray-800 strong {
+            font-weight: 600;
+            color: #1f2937;
+            display: inline;
+        }
+
+        /* List styling */
         .message-bubble .text-gray-800 ul,
         .message-bubble .text-gray-800 ol {
             margin: 1rem 0;
@@ -177,162 +187,54 @@
 
         .message-bubble .text-gray-800 li {
             margin-bottom: 0.5rem;
-            line-height: 1.5;
-        }
-
-        .message-bubble .text-gray-800 li:last-child {
-            margin-bottom: 0;
-        }
-
-        /* Nested lists */
-        .message-bubble .text-gray-800 ul ul,
-        .message-bubble .text-gray-800 ol ol,
-        .message-bubble .text-gray-800 ul ol,
-        .message-bubble .text-gray-800 ol ul {
-            margin: 0.5rem 0;
-            padding-left: 1.25rem;
-        }
-
-        .message-bubble .text-gray-800 ul ul {
-            list-style-type: circle;
-        }
-
-        .message-bubble .text-gray-800 ul ul ul {
-            list-style-type: square;
-        }
-
-        /* Code blocks and inline code */
-        .message-bubble .text-gray-800 code {
-            background-color: #f3f4f6;
-            color: #1f2937;
-            padding: 2px 4px;
-            border-radius: 3px;
-            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-            font-size: 0.875rem;
-        }
-
-        .message-bubble .text-gray-800 pre {
-            background-color: #1f2937;
-            color: #f9fafb;
-            padding: 1rem;
-            border-radius: 6px;
-            overflow-x: auto;
-            margin: 1rem 0;
-            border: 1px solid #374151;
-        }
-
-        .message-bubble .text-gray-800 pre code {
-            background: none;
-            color: inherit;
-            padding: 0;
-            font-size: 0.875rem;
+            line-height: 1.6;
+            padding-left: 0.25rem;
         }
 
         /* Blockquotes */
         .message-bubble .text-gray-800 blockquote {
-            border-left: 4px solid #6b7280;
-            margin: 1rem 0;
+            border-left: 4px solid #3b82f6;
             padding-left: 1rem;
-            color: #6b7280;
-            font-style: italic;
-        }
-
-        /* Tables */
-        .message-bubble .text-gray-800 table {
-            width: 100%;
-            border-collapse: collapse;
             margin: 1rem 0;
-            font-size: 0.875rem;
-        }
-
-        .message-bubble .text-gray-800 th,
-        .message-bubble .text-gray-800 td {
-            border: 1px solid #d1d5db;
-            padding: 0.5rem;
-            text-align: left;
-        }
-
-        .message-bubble .text-gray-800 th {
-            background-color: #f3f4f6;
-            font-weight: 600;
-            color: #374151;
-        }
-
-        .message-bubble .text-gray-800 tr:nth-child(even) {
-            background-color: #f9fafb;
-        }
-
-        /* Horizontal rules */
-        .message-bubble .text-gray-800 hr {
-            border: none;
-            border-top: 2px solid #e5e7eb;
-            margin: 1.5rem 0;
-        }
-
-        /* Strong and emphasis */
-        .message-bubble .text-gray-800 strong,
-        .message-bubble .text-gray-800 b {
-            font-weight: 600;
-            color: #1f2937;
-        }
-
-        .message-bubble .text-gray-800 em,
-        .message-bubble .text-gray-800 i {
             font-style: italic;
             color: #4b5563;
+            background-color: rgba(59, 130, 246, 0.05);
+            padding: 0.75rem 1rem;
+            border-radius: 0.375rem;
         }
 
-        /* Images */
-        .message-bubble .text-gray-800 img {
-            max-width: 100%;
-            height: auto;
-            border-radius: 6px;
-            margin: 0.5rem 0;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        /* Code blocks */
+        .message-bubble .text-gray-800 code {
+            background-color: #f3f4f6;
+            padding: 0.125rem 0.25rem;
+            border-radius: 0.25rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
         }
 
-        /* Status panel styling */
-        .status-panel {
-            margin-left: 44px; /* Align with message content */
+        .message-bubble .text-gray-800 pre {
+            background-color: #f3f4f6;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+            margin: 1rem 0;
         }
 
-        .status-panel .bg-gray-50 {
-            border: 1px solid #e5e7eb;
-            transition: all 0.2s ease;
+        .message-bubble .text-gray-800 pre code {
+            background: none;
+            padding: 0;
         }
 
-        .status-panel .bg-gray-50:hover {
-            border-color: #d1d5db;
-            background-color: #f9fafb;
+        /* Connection status */
+        .connection-status-connected {
+            background-color: #10b981;
+            animation: pulse 2s infinite;
         }
 
-        /* Status log styling */
-        .status-panel #statusLog {
-            max-height: 120px;
-            overflow-y: auto;
-            scrollbar-width: thin;
-            scrollbar-color: #cbd5e1 #f1f5f9;
+        .connection-status-disconnected {
+            background-color: #ef4444;
         }
 
-        .status-panel #statusLog::-webkit-scrollbar {
-            width: 4px;
-        }
-
-        .status-panel #statusLog::-webkit-scrollbar-track {
-            background: #f1f5f9;
-            border-radius: 2px;
-        }
-
-        .status-panel #statusLog::-webkit-scrollbar-thumb {
-            background: #cbd5e1;
-            border-radius: 2px;
-        }
-
-        .status-panel #statusLog::-webkit-scrollbar-thumb:hover {
-            background: #94a3b8;
-        }
-
-        /* Pulse animation for processing indicator */
         @keyframes pulse {
             0%, 100% {
                 opacity: 1;
@@ -342,279 +244,77 @@
             }
         }
 
-        .animate-pulse {
-            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-        }
-
-        /* Button hover effects */
-        #sendButton:hover:not(:disabled) {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
-        }
-
-        #clearChat:hover {
-            transform: translateY(-1px);
-        }
-
-        /* Input focus effects */
-        #queryInput:focus {
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-        }
-
-        /* Status panel transitions */
-        .status-panel button {
-            transition: all 0.2s ease;
-        }
-
-        .status-panel button:hover {
-            transform: scale(1.05);
-        }
-
-        /* YouTube Panel Styles */
-        .youtube-panel {
-            width: 400px;
-            border-left: 1px solid #e5e7eb;
-            background: #ffffff;
-            transition: all 0.3s ease;
-        }
-
-        .youtube-panel.hidden {
-            width: 0;
-            overflow: hidden;
-        }
-
-        .youtube-player-container {
-            aspect-ratio: 16/9;
-            width: 100%;
-            background: #000;
-            border-radius: 8px;
-            overflow: hidden;
-        }
-
-        .youtube-panel-header {
-            background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
-            color: white;
-            padding: 1rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
-        .youtube-info {
-            background: #f8fafc;
-            padding: 1rem;
-            border-bottom: 1px solid #e2e8f0;
-        }
-
-        /* Layout adjustments for the panel */
-        .main-content {
-            transition: margin-right 0.3s ease;
-        }
-
-        .main-content.with-panel {
-            margin-right: 400px;
-        }
-
-        /* Toggle button for panel */
-        .panel-toggle {
-            position: fixed;
-            right: 20px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 1000;
-            background: #dc2626;
-            color: white;
-            border: none;
-            padding: 12px;
-            border-radius: 50%;
-            box-shadow: 0 4px 12px rgba(220, 38, 38, 0.4);
-            transition: all 0.3s ease;
-        }
-
-        .panel-toggle:hover {
-            background: #b91c1c;
-            transform: translateY(-50%) scale(1.1);
-        }
-
-        .panel-toggle.panel-open {
-            right: 420px;
-        }
-
-        /* Responsive improvements */
-        @media (max-width: 1024px) {
-            .youtube-panel {
-                width: 100%;
-                position: fixed;
-                top: 0;
-                right: 0;
-                height: 100vh;
-                z-index: 50;
-                transform: translateX(100%);
-            }
-            
-            .youtube-panel:not(.hidden) {
-                transform: translateX(0);
-            }
-            
-            .main-content.with-panel {
-                margin-right: 0;
-            }
-            
-            .panel-toggle.panel-open {
-                right: 20px;
-            }
-        }
-
+        /* Mobile responsive */
         @media (max-width: 768px) {
             .chat-container {
                 height: calc(100vh - 250px);
             }
             
-            .container {
-                padding-left: 1rem;
-                padding-right: 1rem;
-            }
-            
-            .status-panel {
-                margin-left: 36px; /* Smaller offset on mobile */
-            }
-            
-            .status-panel #statusLog {
-                max-height: 80px;
-            }
-            
-            /* Adjust text size on mobile for better readability */
-            .message-bubble .text-gray-800 {
-                font-size: 0.9rem;
-            }
-            
-            .message-bubble .text-gray-800 table {
-                font-size: 0.8rem;
+            .thinking-dots-container {
+                margin-left: 36px;
             }
         }
 
         @media (max-width: 640px) {
-            .status-panel {
+            .thinking-dots-container {
                 margin-left: 0;
-                margin-top: 8px;
-            }
-            
-            /* Further mobile optimizations */
-            .message-bubble .text-gray-800 ul,
-            .message-bubble .text-gray-800 ol {
-                padding-left: 1.25rem;
-            }
-            
-            .message-bubble .text-gray-800 pre {
-                padding: 0.75rem;
-                font-size: 0.8rem;
             }
         }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
-    <!-- YouTube Panel Toggle Button -->
-    <button id="panelToggle" class="panel-toggle" title="Toggle YouTube Panel">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polygon points="5,3 19,12 5,21"></polygon>
-        </svg>
-    </button>
-
-    <!-- Main Content -->
-    <div class="main-content" id="mainContent">
-        <header class="gradient-bg text-white shadow-lg">
-            <div class="container mx-auto px-4 py-6">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <h1 class="text-3xl font-bold">YuhHearDem</h1>
-                        <p class="text-blue-100 mt-1">AI Parliamentary Research Assistant for Barbados</p>
+    <header class="gradient-bg text-white shadow-lg">
+        <div class="container mx-auto px-4 py-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-3xl font-bold">YuhHearDem</h1>
+                    <p class="text-blue-100 mt-1">AI Parliamentary Research Assistant for Barbados</p>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <div id="connectionStatus" class="flex items-center">
+                        <div class="w-3 h-3 rounded-full bg-green-400 mr-2"></div>
+                        <span class="text-sm">Connected</span>
                     </div>
-                    <div class="flex items-center space-x-4">
-                        <div id="connectionStatus" class="flex items-center">
-                            <div class="w-3 h-3 rounded-full bg-green-400 mr-2"></div>
-                            <span class="text-sm">Connected</span>
-                        </div>
-                        <button id="clearChat" class="bg-white bg-opacity-20 hover:bg-opacity-30 px-4 py-2 rounded-lg transition-colors">Clear Chat</button>
-                    </div>
+                    <button id="clearChat" class="bg-white bg-opacity-20 hover:bg-opacity-30 px-4 py-2 rounded-lg transition-colors">Clear Chat</button>
                 </div>
             </div>
-        </header>
-        
-        <div class="container mx-auto px-4 py-6 pb-4">
-            <div class="bg-white rounded-lg shadow-lg overflow-hidden mb-6">
-                <div id="chatContainer" class="chat-container overflow-y-auto p-6 space-y-4">
-                    <div class="message-bubble">
-                        <div class="flex items-start space-x-3">
-                            <div class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-semibold">YH</div>
-                            <div class="flex-1">
-                                <div class="bg-blue-50 rounded-lg p-4">
-                                    <p class="text-gray-800">Hello! I'm YuhHearDem, your AI assistant for researching Barbados Parliament discussions. Ask me about parliamentary debates, minister statements, bills, or any topic discussed in Parliament.</p>
-                                    <p class="text-gray-600 text-sm mt-2"><strong>Examples:</strong> "What did the Minister of Health say about COVID-19?" or "Recent discussions about water management"</p>
-                                    <p class="text-gray-600 text-sm mt-2"><strong>YouTube:</strong> When I share YouTube links with timestamps, click them to watch the video in the side panel!</p>
-                                </div>
+        </div>
+    </header>
+    
+    <div class="container mx-auto px-4 py-6 pb-4">
+        <div class="bg-white rounded-lg shadow-lg overflow-hidden mb-6">
+            <div id="chatContainer" class="chat-container overflow-y-auto p-6 space-y-4">
+                <div class="message-bubble">
+                    <div class="flex items-start space-x-3">
+                        <div class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-semibold">YH</div>
+                        <div class="flex-1">
+                            <div class="bg-blue-50 rounded-lg p-4">
+                                <p class="text-gray-800">Hello! I'm YuhHearDem, your AI assistant for researching Barbados Parliament discussions. Ask me about parliamentary debates, minister statements, bills, or any topic discussed in Parliament.</p>
+                                <p class="text-gray-600 text-sm mt-2"><strong>Examples:</strong> "What did the Minister of Health say about COVID-19?" or "Recent discussions about water management"</p>
+                                <p class="text-gray-600 text-sm mt-2"><strong>YouTube:</strong> When I share YouTube links with timestamps, click them to watch the video in the side panel!</p>
                             </div>
                         </div>
                     </div>
                 </div>
-                
-                <div class="border-t p-4 bg-white">
-                    <div class="flex space-x-3">
-                        <input type="text" id="queryInput" placeholder="Ask about parliamentary discussions, ministers, bills, or policies..." class="flex-1 border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" disabled>
-                        <button id="sendButton" class="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white px-6 py-3 rounded-lg font-semibold transition-colors disabled:cursor-not-allowed" disabled>Send</button>
-                    </div>
-                    <div id="inputStatus" class="text-sm text-gray-500 mt-2">Connecting to YuhHearDem service...</div>
-                </div>
             </div>
             
-            <div class="text-center text-sm text-gray-500 pb-4">
-                <span id="sessionInfo">Session ID: <span id="sessionId">Generating...</span> | User ID: <span id="userId">Generating...</span></span>
-                <span id="sessionStatus" class="ml-2 px-2 py-1 rounded text-xs"></span>
+            <div class="border-t p-4 bg-white">
+                <div class="flex space-x-3">
+                    <input type="text" id="queryInput" placeholder="Ask about parliamentary discussions, ministers, bills, or policies..." class="flex-1 border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" disabled>
+                    <button id="sendButton" class="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white px-6 py-3 rounded-lg font-semibold transition-colors disabled:cursor-not-allowed" disabled>Send</button>
+                </div>
+                <div id="inputStatus" class="text-sm text-gray-500 mt-2">Connecting to YuhHearDem service...</div>
             </div>
-        </div>
-    </div>
-
-    <!-- YouTube Panel -->
-    <div id="youtubePanel" class="youtube-panel hidden fixed top-0 right-0 h-full">
-        <div class="youtube-panel-header">
-            <div class="flex items-center space-x-2">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
-                </svg>
-                <span class="font-semibold">YouTube Player</span>
-            </div>
-            <button id="closePanelBtn" class="hover:bg-white hover:bg-opacity-20 p-1 rounded">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-            </button>
         </div>
         
-        <div class="youtube-info" id="videoInfo">
-            <p class="text-sm text-gray-600">Click on a YouTube link in the chat to start watching</p>
-        </div>
-        
-        <div class="p-4">
-            <div class="youtube-player-container">
-                <iframe id="youtubePlayer" 
-                        width="100%" 
-                        height="100%" 
-                        src="" 
-                        frameborder="0" 
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
-                        allowfullscreen>
-                </iframe>
-            </div>
+        <div class="text-center text-sm text-gray-500 pb-4">
+            <span id="sessionInfo">Session ID: <span id="sessionId">Generating...</span> | User ID: <span id="userId">Generating...</span></span>
+            <span id="sessionStatus" class="ml-2 px-2 py-1 rounded text-xs"></span>
         </div>
     </div>
 
     <script>
-        /**
-         * YuhHearDem Chat Application
-         * Real-time parliamentary research assistant with multi-agent streaming
-         * Enhanced with YouTube panel functionality
-         */
-
+        // Clean YuhHearDem Chat Application - No Old Code
         function generateUUID() {
             return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
                 var r = Math.random() * 16 | 0;
@@ -629,45 +329,28 @@
             userId: null,
             sessionId: null,
             isProcessing: false,
-            currentStatusPanel: null,
-            currentAssistantMessage: null,
+            currentThinkingDots: null,
             
-            // YouTube panel state
-            youtubePanelOpen: false,
-            
-            // DOM elements cache
+            // DOM elements
             elements: {
                 chatContainer: null,
                 queryInput: null,
                 sendButton: null,
                 inputStatus: null,
                 connectionStatus: null,
-                clearButton: null,
-                mainContent: null,
-                youtubePanel: null,
-                panelToggle: null,
-                youtubePlayer: null,
-                videoInfo: null,
-                closePanelBtn: null
+                clearButton: null
             },
             
-            /**
-             * Initialize the chat application
-             */
             init: function() {
-                console.log('🔧 Initializing YuhHearDem chat...');
+                console.log('🔧 Initializing clean YuhHearDem chat...');
                 
                 this.initializeSession();
                 this.cacheElements();
                 this.displaySessionInfo();
                 this.testConnection();
                 this.setupEventListeners();
-                this.setupYouTubePanel();
             },
             
-            /**
-             * Cache DOM elements for performance
-             */
             cacheElements: function() {
                 this.elements.chatContainer = document.getElementById('chatContainer');
                 this.elements.queryInput = document.getElementById('queryInput');
@@ -675,318 +358,17 @@
                 this.elements.inputStatus = document.getElementById('inputStatus');
                 this.elements.connectionStatus = document.getElementById('connectionStatus');
                 this.elements.clearButton = document.getElementById('clearChat');
-                this.elements.mainContent = document.getElementById('mainContent');
-                this.elements.youtubePanel = document.getElementById('youtubePanel');
-                this.elements.panelToggle = document.getElementById('panelToggle');
-                this.elements.youtubePlayer = document.getElementById('youtubePlayer');
-                this.elements.videoInfo = document.getElementById('videoInfo');
-                this.elements.closePanelBtn = document.getElementById('closePanelBtn');
             },
             
-            /**
-             * Setup YouTube panel functionality
-             */
-            setupYouTubePanel: function() {
-                var self = this;
-                
-                // Panel toggle button
-                this.elements.panelToggle.addEventListener('click', function() {
-                    self.toggleYouTubePanel();
-                });
-                
-                // Close panel button
-                this.elements.closePanelBtn.addEventListener('click', function() {
-                    self.closeYouTubePanel();
-                });
-                
-                // Delegate click events for YouTube links
-                this.elements.chatContainer.addEventListener('click', function(e) {
-                    if (e.target.tagName === 'A' && (e.target.href.includes('youtube.com') || e.target.href.includes('youtu.be'))) {
-                        e.preventDefault();
-                        self.playYouTubeVideo(e.target.href, e.target.textContent);
-                    }
-                });
-            },
-            
-            /**
-             * Toggle YouTube panel visibility
-             */
-            toggleYouTubePanel: function() {
-                if (this.youtubePanelOpen) {
-                    this.closeYouTubePanel();
-                } else {
-                    this.openYouTubePanel();
-                }
-            },
-            
-            /**
-             * Open YouTube panel
-             */
-            openYouTubePanel: function() {
-                this.elements.youtubePanel.classList.remove('hidden');
-                this.elements.mainContent.classList.add('with-panel');
-                this.elements.panelToggle.classList.add('panel-open');
-                this.youtubePanelOpen = true;
-                
-                // Update toggle button icon to close
-                this.elements.panelToggle.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
-                this.elements.panelToggle.title = 'Close YouTube Panel';
-            },
-            
-            /**
-             * Close YouTube panel
-             */
-            closeYouTubePanel: function() {
-                this.elements.youtubePanel.classList.add('hidden');
-                this.elements.mainContent.classList.remove('with-panel');
-                this.elements.panelToggle.classList.remove('panel-open');
-                this.youtubePanelOpen = false;
-                
-                // Update toggle button icon to open
-                this.elements.panelToggle.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5,3 19,12 5,21"></polygon></svg>';
-                this.elements.panelToggle.title = 'Open YouTube Panel';
-            },
-            
-            /**
-             * Extract YouTube video ID and timestamp from URL
-             */
-            parseYouTubeUrl: function(url) {
-                var videoId = null;
-                var timestamp = null;
-                
-                // Extract video ID
-                var regExp = /^.*((youtu.be\/)|(v\/)|(\/u\/\w\/)|(embed\/)|(watch\?))\??v?=?([^#\&\?]*).*/;
-                var match = url.match(regExp);
-                if (match && match[7].length === 11) {
-                    videoId = match[7];
-                }
-                
-                // Extract timestamp
-                var timeMatch = url.match(/[?&]t=([^&]*)/);
-                if (timeMatch) {
-                    timestamp = timeMatch[1];
-                    // Convert timestamp formats (e.g., 1m30s to 90)
-                    if (timestamp.includes('m') || timestamp.includes('s')) {
-                        var minutes = 0, seconds = 0;
-                        var minMatch = timestamp.match(/(\d+)m/);
-                        var secMatch = timestamp.match(/(\d+)s/);
-                        if (minMatch) minutes = parseInt(minMatch[1]);
-                        if (secMatch) seconds = parseInt(secMatch[1]);
-                        timestamp = minutes * 60 + seconds;
-                    }
-                }
-                
-                return { videoId: videoId, timestamp: timestamp };
-            },
-            
-            /**
-             * Play YouTube video in the panel
-             */
-            playYouTubeVideo: function(url, linkText) {
-                var parsed = this.parseYouTubeUrl(url);
-                
-                if (!parsed.videoId) {
-                    console.error('Could not extract video ID from URL:', url);
-                    return;
-                }
-                
-                // Open panel if not already open
-                if (!this.youtubePanelOpen) {
-                    this.openYouTubePanel();
-                }
-                
-                // Try different embed strategies to work around restrictions
-                this.tryEmbedStrategies(parsed, url, linkText);
-            },
-            
-            /**
-             * Try multiple embedding strategies to work around restrictions
-             */
-            tryEmbedStrategies: function(parsed, originalUrl, linkText) {
-                var self = this;
-                var strategies = [
-                    // Strategy 1: Standard embed with nocookie domain
-                    {
-                        name: 'YouTube NoMobookie',
-                        url: 'https://www.youtube-nocookie.com/embed/' + parsed.videoId + '?autoplay=1&enablejsapi=1' + 
-                             (parsed.timestamp ? '&start=' + parsed.timestamp : '')
-                    },
-                    // Strategy 2: Standard embed
-                    {
-                        name: 'YouTube Standard',
-                        url: 'https://www.youtube.com/embed/' + parsed.videoId + '?autoplay=1&enablejsapi=1' + 
-                             (parsed.timestamp ? '&start=' + parsed.timestamp : '')
-                    },
-                    // Strategy 3: Invidious (privacy-focused YouTube frontend)
-                    {
-                        name: 'Invidious',
-                        url: 'https://invidious.io/embed/' + parsed.videoId + '?autoplay=1' + 
-                             (parsed.timestamp ? '&t=' + parsed.timestamp : '')
-                    }
-                ];
-                
-                var currentStrategy = 0;
-                
-                function tryNextStrategy() {
-                    if (currentStrategy >= strategies.length) {
-                        // All strategies failed, show fallback
-                        self.showVideoFallback(originalUrl, linkText, parsed);
-                        return;
-                    }
-                    
-                    var strategy = strategies[currentStrategy];
-                    console.log('🎯 Trying strategy:', strategy.name, strategy.url);
-                    
-                    // Create a temporary iframe to test if it loads
-                    var testFrame = document.createElement('iframe');
-                    testFrame.style.display = 'none';
-                    testFrame.src = strategy.url;
-                    
-                    var timeout = setTimeout(function() {
-                        document.body.removeChild(testFrame);
-                        currentStrategy++;
-                        tryNextStrategy();
-                    }, 3000);
-                    
-                    testFrame.onload = function() {
-                        clearTimeout(timeout);
-                        document.body.removeChild(testFrame);
-                        
-                        // This strategy worked, use it
-                        self.loadVideoWithStrategy(strategy, originalUrl, linkText, parsed);
-                    };
-                    
-                    testFrame.onerror = function() {
-                        clearTimeout(timeout);
-                        document.body.removeChild(testFrame);
-                        currentStrategy++;
-                        tryNextStrategy();
-                    };
-                    
-                    document.body.appendChild(testFrame);
-                }
-                
-                // Start with the first strategy
-                tryNextStrategy();
-            },
-            
-            /**
-             * Load video using a successful strategy
-             */
-            loadVideoWithStrategy: function(strategy, originalUrl, linkText, parsed) {
-                // Update player
-                this.elements.youtubePlayer.src = strategy.url;
-                
-                // Update video info
-                var timestampText = parsed.timestamp ? ' (starting at ' + this.formatTimestamp(parsed.timestamp) + ')' : '';
-                this.elements.videoInfo.innerHTML = 
-                    '<div class="flex items-center space-x-2 mb-2">' +
-                        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-                            '<polygon points="5,3 19,12 5,21"></polygon>' +
-                        '</svg>' +
-                        '<span class="font-medium text-gray-800">Now Playing</span>' +
-                        '<span class="text-xs text-gray-500 ml-2">via ' + strategy.name + '</span>' +
-                    '</div>' +
-                    '<p class="text-sm text-gray-600">' + linkText + timestampText + '</p>' +
-                    '<div class="flex space-x-2 mt-2">' +
-                        '<a href="' + originalUrl + '" target="_blank" class="text-xs text-blue-600 hover:text-blue-800">Open in YouTube</a>' +
-                        '<button onclick="chatApp.refreshVideo(\'' + originalUrl + '\', \'' + linkText.replace(/'/g, "\\'") + '\')" class="text-xs text-gray-600 hover:text-gray-800">Refresh</button>' +
-                    '</div>';
-                
-                console.log('🎥 Playing video with strategy:', strategy.name, parsed.videoId);
-            },
-            
-            /**
-             * Show fallback when all embedding strategies fail
-             */
-            showVideoFallback: function(originalUrl, linkText, parsed) {
-                var timestampText = parsed.timestamp ? ' (at ' + this.formatTimestamp(parsed.timestamp) + ')' : '';
-                
-                this.elements.youtubePlayer.style.display = 'none';
-                
-                // Create fallback content
-                var fallbackHtml = 
-                    '<div class="flex flex-col items-center justify-center h-full bg-gray-100 rounded-lg p-6 text-center">' +
-                        '<div class="bg-red-100 p-4 rounded-full mb-4">' +
-                            '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2">' +
-                                '<circle cx="12" cy="12" r="10"></circle>' +
-                                '<line x1="15" y1="9" x2="9" y2="15"></line>' +
-                                '<line x1="9" y1="9" x2="15" y2="15"></line>' +
-                            '</svg>' +
-                        '</div>' +
-                        '<h3 class="font-semibold text-gray-800 mb-2">Video Cannot Be Embedded</h3>' +
-                        '<p class="text-sm text-gray-600 mb-4">This video has embedding disabled by the owner.</p>' +
-                        '<div class="space-y-2">' +
-                            '<a href="' + originalUrl + '" target="_blank" class="block bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors">' +
-                                'Watch on YouTube' + timestampText +
-                            '</a>' +
-                            '<button onclick="chatApp.refreshVideo(\'' + originalUrl + '\', \'' + linkText.replace(/'/g, "\\'") + '\')" class="block w-full text-sm text-gray-600 hover:text-gray-800">' +
-                                'Try Again' +
-                            '</button>' +
-                        '</div>' +
-                    '</div>';
-                
-                // Replace player container content
-                var playerContainer = this.elements.youtubePlayer.parentElement;
-                playerContainer.innerHTML = fallbackHtml;
-                
-                // Update video info
-                this.elements.videoInfo.innerHTML = 
-                    '<div class="flex items-center space-x-2 mb-2">' +
-                        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-                            '<circle cx="12" cy="12" r="10"></circle>' +
-                            '<line x1="15" y1="9" x2="9" y2="15"></line>' +
-                            '<line x1="9" y1="9" x2="15" y2="15"></line>' +
-                        '</svg>' +
-                        '<span class="font-medium text-gray-800">Embedding Blocked</span>' +
-                    '</div>' +
-                    '<p class="text-sm text-gray-600">' + linkText + timestampText + '</p>' +
-                    '<p class="text-xs text-gray-500 mt-1">Click "Watch on YouTube" to view this video.</p>';
-                
-                console.log('❌ All embedding strategies failed for:', parsed.videoId);
-            },
-            
-            /**
-             * Refresh video attempt (for retry functionality)
-             */
-            refreshVideo: function(url, linkText) {
-                // Reset player container
-                var playerContainer = this.elements.youtubePlayer.parentElement;
-                playerContainer.innerHTML = 
-                    '<iframe id="youtubePlayer" width="100%" height="100%" src="" frameborder="0" ' +
-                    'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" ' +
-                    'allowfullscreen></iframe>';
-                
-                // Re-cache the player element
-                this.elements.youtubePlayer = document.getElementById('youtubePlayer');
-                
-                // Try playing again
-                this.playYouTubeVideo(url, linkText);
-            },
-            
-            /**
-             * Format timestamp for display
-             */
-            formatTimestamp: function(seconds) {
-                var minutes = Math.floor(seconds / 60);
-                var remainingSeconds = seconds % 60;
-                return minutes + ':' + remainingSeconds.toString().padStart(2, '0');
-            },
-            
-            /**
-             * Initialize or restore user session
-             */
             initializeSession: function() {
                 var existingUserId = sessionStorage.getItem('yuhheardem_user_id');
                 var existingSessionId = sessionStorage.getItem('yuhheardem_session_id');
                 
                 if (existingUserId && existingSessionId) {
-                    console.log('🔄 Restoring existing session:', existingSessionId.substring(0, 8));
                     this.userId = existingUserId;
                     this.sessionId = existingSessionId;
                     this.setSessionStatus('Session Restored', 'success');
                 } else {
-                    console.log('🆕 Creating new session');
                     this.userId = generateUUID();
                     this.sessionId = generateUUID();
                     
@@ -994,21 +376,13 @@
                     sessionStorage.setItem('yuhheardem_session_id', this.sessionId);
                     this.setSessionStatus('New Session', 'new');
                 }
-                
-                console.log('Session initialized - User:', this.userId.substring(0, 8), 'Session:', this.sessionId.substring(0, 8));
             },
             
-            /**
-             * Display session information in the UI
-             */
             displaySessionInfo: function() {
                 document.getElementById('sessionId').textContent = this.sessionId.substring(0, 8) + '...';
                 document.getElementById('userId').textContent = this.userId.substring(0, 8) + '...';
             },
             
-            /**
-             * Set session status indicator
-             */
             setSessionStatus: function(text, type) {
                 var sessionStatus = document.getElementById('sessionStatus');
                 sessionStatus.textContent = text;
@@ -1030,27 +404,19 @@
                 sessionStatus.className = className;
             },
             
-            /**
-             * Test connection to the backend service
-             */
             testConnection: function() {
-                console.log('🔍 Testing connection to: ' + this.apiBase + '/health');
-                
                 fetch(this.apiBase + '/health')
                     .then(function(response) {
-                        console.log('📡 Health response status: ' + response.status);
                         if (!response.ok) {
                             throw new Error('Health check failed: ' + response.status);
                         }
                         return response.json();
                     })
                     .then(function(health) {
-                        console.log('📊 Health data:', health);
                         if (health.status === 'healthy') {
                             chatApp.setConnectionStatus(true);
                             chatApp.enableInput();
                             chatApp.elements.inputStatus.textContent = 'Ready! Ask me about parliamentary discussions.';
-                            console.log('✅ Connection successful');
                         } else {
                             throw new Error('Service not healthy: ' + health.status);
                         }
@@ -1062,9 +428,6 @@
                     });
             },
             
-            /**
-             * Setup event listeners for UI interactions
-             */
             setupEventListeners: function() {
                 var self = this;
                 
@@ -1082,17 +445,8 @@
                 this.elements.clearButton.addEventListener('click', function() {
                     self.clearChat();
                 });
-                
-                // Auto-resize input based on content
-                this.elements.queryInput.addEventListener('input', function() {
-                    this.style.height = 'auto';
-                    this.style.height = Math.min(this.scrollHeight, 120) + 'px';
-                });
             },
             
-            /**
-             * Update connection status indicator
-             */
             setConnectionStatus: function(connected) {
                 var statusDot = this.elements.connectionStatus.querySelector('div');
                 var statusText = this.elements.connectionStatus.querySelector('span');
@@ -1106,168 +460,76 @@
                 }
             },
             
-            /**
-             * Enable user input controls
-             */
             enableInput: function() {
                 this.elements.queryInput.disabled = false;
                 this.elements.sendButton.disabled = false;
                 this.elements.queryInput.focus();
             },
             
-            /**
-             * Disable user input controls
-             */
             disableInput: function() {
                 this.elements.queryInput.disabled = true;
                 this.elements.sendButton.disabled = true;
             },
             
-            /**
-             * Send user query to the backend
-             */
+            showThinkingDots: function() {
+                this.hideThinkingDots();
+                
+                console.log('🎭 Showing thinking dots');
+                
+                var dotsContainer = document.createElement('div');
+                dotsContainer.className = 'thinking-dots-container fade-in';
+                dotsContainer.innerHTML = 
+                    '<div class="thinking-dots">' +
+                        '<div class="thinking-dot"></div>' +
+                        '<div class="thinking-dot"></div>' +
+                        '<div class="thinking-dot"></div>' +
+                    '</div>';
+                
+                this.elements.chatContainer.appendChild(dotsContainer);
+                this.currentThinkingDots = dotsContainer;
+                this.scrollToBottom();
+                
+                return dotsContainer;
+            },
+            
+            hideThinkingDots: function() {
+                if (this.currentThinkingDots) {
+                    console.log('🎭 Hiding thinking dots');
+                    var dots = this.currentThinkingDots;
+                    dots.classList.add('fade-out');
+                    
+                    setTimeout(function() {
+                        if (dots.parentNode) {
+                            dots.parentNode.removeChild(dots);
+                        }
+                    }, 300);
+                    
+                    this.currentThinkingDots = null;
+                }
+            },
+            
             sendQuery: function() {
                 var query = this.elements.queryInput.value.trim();
                 if (!query || this.isProcessing) return;
                 
+                console.log('🚀 Sending query:', query);
+                
                 this.isProcessing = true;
                 this.disableInput();
                 
-                var userMessageDiv = this.addMessage('user', query);
+                // Add user message
+                this.addMessage('user', query);
                 this.elements.queryInput.value = '';
-                this.elements.queryInput.style.height = 'auto';
                 
-                // Reset tracking variables
-                this.currentAssistantMessage = null;
-                this.currentStatusPanel = null;
+                // Show thinking dots immediately
+                this.showThinkingDots();
                 
+                // Start stream
                 this.streamQuery(query);
             },
             
-            /**
-             * Create a status panel underneath a message that starts expanded
-             */
-            createStatusPanel: function(messageDiv) {
-                var statusPanel = document.createElement('div');
-                statusPanel.className = 'status-panel mt-2 ml-11';
-                statusPanel.innerHTML = 
-                    '<div class="bg-gray-50 border border-gray-200 rounded-lg p-3">' +
-                        '<div class="flex items-center justify-between mb-2">' +
-                            '<div class="flex items-center space-x-2">' +
-                                '<div class="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>' +
-                                '<span class="text-sm font-medium text-gray-700" id="currentStatus">Processing your question...</span>' +
-                            '</div>' +
-                            '<button class="text-xs text-blue-500 hover:text-blue-700" id="toggleDetails" onclick="chatApp.toggleStatusDetails(this)">Hide details</button>' +
-                        '</div>' +
-                        '<div class="" id="statusDetails">' +
-                            '<div class="text-xs text-gray-600 space-y-1" id="statusLog"></div>' +
-                        '</div>' +
-                    '</div>';
-                
-                messageDiv.appendChild(statusPanel);
-                this.scrollToBottom();
-                
-                return statusPanel;
-            },
-            
-            /**
-             * Toggle status details visibility
-             */
-            toggleStatusDetails: function(button) {
-                var statusDetails = button.closest('.status-panel').querySelector('#statusDetails');
-                var isHidden = statusDetails.classList.contains('hidden');
-                
-                if (isHidden) {
-                    statusDetails.classList.remove('hidden');
-                    button.textContent = 'Hide details';
-                } else {
-                    statusDetails.classList.add('hidden');
-                    button.textContent = 'Show details';
-                }
-            },
-            
-            /**
-             * Update current status in the panel
-             */
-            updateCurrentStatus: function(agent, message) {
-                if (!this.currentStatusPanel) {
-                    console.log('❌ No status panel to update');
-                    return;
-                }
-                
-                var statusElement = this.currentStatusPanel.querySelector('#currentStatus');
-                if (statusElement) {
-                    console.log('✅ Updating status element:', message);
-                    statusElement.textContent = message;
-                } else {
-                    console.log('❌ Could not find #currentStatus element in panel');
-                    console.log('Panel HTML:', this.currentStatusPanel.innerHTML);
-                }
-                
-                // Add to detailed log
-                this.addToStatusLog(agent, message);
-            },
-            
-            /**
-             * Add entry to status log
-             */
-            addToStatusLog: function(agent, message) {
-                if (!this.currentStatusPanel) return;
-                
-                var statusLog = this.currentStatusPanel.querySelector('#statusLog');
-                if (statusLog) {
-                    var timestamp = new Date().toLocaleTimeString();
-                    var logEntry = document.createElement('div');
-                    logEntry.className = 'text-xs text-gray-500';
-                    logEntry.innerHTML = 
-                        '<span class="text-gray-400">[' + timestamp + ']</span> ' +
-                        '<span class="font-medium text-blue-600">' + agent + ':</span> ' +
-                        '<span>' + message + '</span>';
-                    
-                    statusLog.appendChild(logEntry);
-                    
-                    // Auto-scroll the log
-                    statusLog.scrollTop = statusLog.scrollHeight;
-                }
-            },
-            
-            /**
-             * Collapse status panel after processing is complete
-             */
-            collapseStatusPanel: function() {
-                if (!this.currentStatusPanel) return;
-                
-                var statusElement = this.currentStatusPanel.querySelector('#currentStatus');
-                var statusDetails = this.currentStatusPanel.querySelector('#statusDetails');
-                var toggleButton = this.currentStatusPanel.querySelector('#toggleDetails');
-                
-                if (statusElement && statusDetails && toggleButton) {
-                    // Update main status
-                    statusElement.textContent = 'Research completed';
-                    statusElement.className = 'text-sm text-gray-600';
-                    
-                    // Remove pulsing dot and add check icon
-                    var pulsingDot = this.currentStatusPanel.querySelector('.animate-pulse');
-                    if (pulsingDot) {
-                        pulsingDot.className = 'w-2 h-2 bg-green-500 rounded-full';
-                    }
-                    
-                    // Auto-collapse after a brief delay
-                    setTimeout(function() {
-                        statusDetails.classList.add('hidden');
-                        toggleButton.textContent = 'Show details';
-                    }, 2000);
-                }
-                
-                this.currentStatusPanel = null;
-            },
-            
-            /**
-             * Stream query with real-time updates
-             */
             streamQuery: function(query) {
                 var self = this;
-                console.log('🚀 Starting stream query for:', query);
                 
                 fetch(this.apiBase + '/query/stream', {
                     method: 'POST',
@@ -1279,9 +541,8 @@
                     })
                 })
                 .then(function(response) {
-                    console.log('📡 Stream response status:', response.status);
                     if (!response.ok) {
-                        throw new Error('HTTP ' + response.status + ': ' + response.statusText);
+                        throw new Error('HTTP ' + response.status);
                     }
                     return response.body.getReader();
                 })
@@ -1293,7 +554,7 @@
                         return reader.read().then(function(result) {
                             if (result.done) {
                                 console.log('🏁 Stream finished');
-                                self.collapseStatusPanel();
+                                self.hideThinkingDots();
                                 self.isProcessing = false;
                                 self.enableInput();
                                 return;
@@ -1303,57 +564,29 @@
                             var lines = buffer.split('\n');
                             buffer = lines.pop();
                             
-                            console.log('📦 Processing', lines.length, 'lines from stream');
-                            
                             for (var i = 0; i < lines.length; i++) {
                                 var line = lines[i];
-                                console.log('📝 Raw line:', line);
-                                
                                 if (line.startsWith('data: ')) {
                                     try {
                                         var eventData = JSON.parse(line.substring(6));
-                                        console.log('🎯 Parsed event:', eventData);
+                                        console.log('📨 Event:', eventData.type);
                                         
-                                        // Handle different event types
-                                        if (eventData.type === 'query_start') {
-                                            console.log('🚀 Query started');
-                                            if (!self.currentStatusPanel) {
-                                                // Create a simple assistant message first
-                                                self.currentAssistantMessage = self.addMessage('assistant', 'Searching parliamentary records...');
-                                                self.currentStatusPanel = self.createStatusPanel(self.currentAssistantMessage);
-                                            }
-                                            self.updateCurrentStatus('System', eventData.message);
-                                            
-                                        } else if (eventData.type === 'response_ready' && eventData.data && eventData.data.response) {
-                                            console.log('✅ Response ready, updating message');
-                                            
-                                            // Replace or create the assistant message
-                                            if (self.currentAssistantMessage) {
-                                                self.replaceMessageContent(self.currentAssistantMessage, eventData.data.response);
-                                            } else {
-                                                self.currentAssistantMessage = self.addMessage('assistant', eventData.data.response);
-                                            }
-                                            
-                                            if (self.currentStatusPanel) {
-                                                self.updateCurrentStatus('YuhHearDem', 'Response completed');
-                                            }
+                                        // ONLY handle final response - ignore everything else
+                                        if (eventData.type === 'response_ready' && eventData.data && eventData.data.response) {
+                                            console.log('✅ Got final response');
+                                            self.hideThinkingDots();
+                                            self.addMessage('assistant', eventData.data.response);
                                             
                                         } else if (eventData.type === 'error') {
-                                            console.log('❌ Error event:', eventData.message);
-                                            if (self.currentAssistantMessage) {
-                                                self.replaceMessageContent(self.currentAssistantMessage, 'Error: ' + eventData.message);
-                                            } else {
-                                                self.addMessage('assistant', 'Error: ' + eventData.message);
-                                            }
-                                            
+                                            console.log('❌ Got error');
+                                            self.hideThinkingDots();
+                                            self.addMessage('assistant', 'Error: ' + eventData.message);
                                         } else {
-                                            console.log('🔄 Other event:', eventData.type, eventData.message);
-                                            if (self.currentStatusPanel && eventData.message) {
-                                                self.updateCurrentStatus(eventData.agent || 'System', eventData.message);
-                                            }
+                                            console.log('🔄 Ignoring event type:', eventData.type);
                                         }
+                                        
                                     } catch (e) {
-                                        console.error('❌ Error parsing event:', e, 'Line:', line);
+                                        console.error('❌ Parse error:', e);
                                     }
                                 }
                             }
@@ -1365,37 +598,17 @@
                     return readStream();
                 })
                 .catch(function(error) {
-                    console.error('❌ Stream query failed:', error);
+                    console.error('❌ Stream failed:', error);
+                    self.hideThinkingDots();
                     self.addMessage('assistant', 'Sorry, I encountered an error: ' + error.message);
-                    self.collapseStatusPanel();
                     self.isProcessing = false;
                     self.enableInput();
                 });
             },
             
-            /**
-             * Replace the content of an existing message
-             */
-            replaceMessageContent: function(messageDiv, newContent) {
-                var contentElement = messageDiv.querySelector('.text-gray-800');
-                if (contentElement) {
-                    // Use the content directly as HTML (already processed by backend)
-                    contentElement.innerHTML = newContent;
-                    
-                    // Update timestamp
-                    var timestampElement = messageDiv.querySelector('.text-xs.text-gray-500');
-                    if (timestampElement) {
-                        timestampElement.textContent = new Date().toLocaleTimeString();
-                    }
-                    
-                    this.scrollToBottom();
-                }
-            },
-            
-            /**
-             * Add message to chat
-             */
             addMessage: function(sender, content) {
+                console.log('💬 Adding message:', sender, content.substring(0, 50) + '...');
+                
                 var messageDiv = document.createElement('div');
                 messageDiv.className = 'message-bubble';
                 
@@ -1404,14 +617,23 @@
                 var bubbleBg = isUser ? 'bg-green-50' : 'bg-blue-50';
                 var avatarText = isUser ? 'U' : 'YH';
                 
-                // Process content differently based on sender
                 var htmlContent;
                 if (isUser) {
-                    // For user messages, escape HTML and do basic text processing
                     htmlContent = this.escapeHtml(content).replace(/\n/g, '<br>');
                 } else {
-                    // For assistant messages, use content as-is (already processed HTML from backend)
-                    htmlContent = content;
+                    // Parse markdown for assistant responses
+                    try {
+                        // Configure marked for better formatting
+                        marked.setOptions({
+                            breaks: true,
+                            gfm: true,
+                            sanitize: false
+                        });
+                        htmlContent = marked.parse(content);
+                    } catch (e) {
+                        console.error('Markdown parsing error:', e);
+                        htmlContent = this.escapeHtml(content).replace(/\n/g, '<br>');
+                    }
                 }
                 
                 var reverseClass = isUser ? 'flex-row-reverse space-x-reverse' : '';
@@ -1433,33 +655,22 @@
                 return messageDiv;
             },
             
-            /**
-             * Escape HTML entities for user input
-             */
             escapeHtml: function(text) {
                 var div = document.createElement('div');
                 div.textContent = text;
                 return div.innerHTML;
             },
             
-            /**
-             * Scroll chat to bottom
-             */
             scrollToBottom: function() {
                 this.elements.chatContainer.scrollTop = this.elements.chatContainer.scrollHeight;
             },
             
-            /**
-             * Clear chat and start new session
-             */
             clearChat: function() {
-                // Remove all messages except the welcome message
                 var messages = this.elements.chatContainer.querySelectorAll('.message-bubble');
                 for (var i = 1; i < messages.length; i++) {
                     messages[i].remove();
                 }
                 
-                // Generate new session
                 this.userId = generateUUID();
                 this.sessionId = generateUUID();
                 
@@ -1468,40 +679,16 @@
                 
                 this.displaySessionInfo();
                 this.setSessionStatus('New Session', 'new');
-                this.currentStatusPanel = null;
-                this.currentAssistantMessage = null;
-                
-                console.log('🧹 Cleared chat and created new session:', this.sessionId.substring(0, 8));
-                
-                // Clear backend session
-                this.clearBackendSession();
                 
                 this.elements.queryInput.focus();
-            },
-            
-            /**
-             * Clear backend session state
-             */
-            clearBackendSession: function() {
-                fetch(this.apiBase + '/session/clear', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        user_id: this.userId,
-                        session_id: this.sessionId
-                    })
-                }).catch(function(error) {
-                    console.log('Backend session clear failed (non-critical):', error);
-                });
             }
         };
 
-        // Initialize the application when DOM is ready
+        // Initialize when DOM is ready
         document.addEventListener('DOMContentLoaded', function() {
             chatApp.init();
         });
 
-        // Export for global access if needed
         window.chatApp = chatApp;
     </script>
 </body>
