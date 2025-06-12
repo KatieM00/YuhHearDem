@@ -11,7 +11,6 @@ import json
 import logging
 import asyncio
 import uuid
-import numpy as np
 from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional, Tuple, Set, AsyncGenerator
 from contextlib import asynccontextmanager
@@ -914,7 +913,7 @@ if __name__ == "__main__":
     logger.info("📋 Required: GOOGLE_API_KEY, MONGODB_CONNECTION_STRING")
     
     uvicorn.run(
-        "simplified_parliamentary_chatbot:app",
+        "yuhheardem_chatbot:app",
         host="0.0.0.0",
         port=port,
         reload=True
