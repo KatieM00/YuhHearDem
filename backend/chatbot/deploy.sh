@@ -1,0 +1,12 @@
+gcloud run deploy yuhheardem-chatbot \
+    --source . \
+    --platform managed \
+    --region us-east1 \
+    --allow-unauthenticated \
+    --port 8080 \
+    --memory 4Gi \
+    --cpu 1 \
+    --timeout 3600 \
+    --concurrency 100 \
+    --min-instances 1 \
+    --max-instances 2
