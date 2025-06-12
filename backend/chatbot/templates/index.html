@@ -650,6 +650,16 @@
                     '</div>';
                 
                 this.elements.chatContainer.appendChild(messageDiv);
+                
+                // Make YouTube links open in new window
+                if (!isUser) {
+                    var youtubeLinks = messageDiv.querySelectorAll('a[href*="youtube.com"], a[href*="youtu.be"]');
+                    for (var i = 0; i < youtubeLinks.length; i++) {
+                        youtubeLinks[i].target = '_blank';
+                        youtubeLinks[i].rel = 'noopener noreferrer';
+                    }
+                }
+                
                 this.scrollToBottom();
                 
                 return messageDiv;

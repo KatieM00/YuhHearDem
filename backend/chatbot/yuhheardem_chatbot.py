@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Full Parliamentary Chatbot - Fixed Session Management
-====================================================
+Fixed Parliamentary Chatbot - Simple Session Management That Works
+==================================================================
 
-Fixed session handling to prevent session not found errors.
+Goes back to working session management while maintaining enhanced features.
 """
 
 import os
@@ -40,6 +40,12 @@ from rdflib.namespace import RDF, RDFS
 import markdown
 from bs4 import BeautifulSoup
 
+# Mount static files and templates
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+import pytz
+
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -61,6 +67,104 @@ class QueryResponse(BaseModel):
     message_id: str
     status: str
     message: Optional[str] = None
+
+class SessionGraphState:
+    """Manages cumulative graph state for a session."""
+    
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.graph = Graph()
+        self.node_count = 0
+        self.edge_count = 0
+        self.last_topics = set()
+        self.created_at = datetime.now(timezone.utc)
+        
+        # Bind namespaces
+        self.graph.bind("bbp", BBP)
+        self.graph.bind("schema", SCHEMA)
+        self.graph.bind("prov", PROV)
+        self.graph.bind("rdfs", RDFS)
+        self.graph.bind("rdf", RDF)
+        
+    def add_turtle_data(self, turtle_str: str) -> bool:
+        """Add Turtle data to the cumulative graph."""
+        try:
+            # Parse Turtle into temporary graph
+            temp_graph = Graph()
+            temp_graph.parse(data=turtle_str, format='turtle')
+            
+            # Track what we're adding
+            new_triples = len(temp_graph)
+            
+            # Add to cumulative graph
+            for triple in temp_graph:
+                self.graph.add(triple)
+            
+            # Update counts
+            self.node_count = len(set(self.graph.subjects()) | set(self.graph.objects()))
+            self.edge_count = len(self.graph)
+            
+            logger.info(f"📈 Session {self.session_id[:8]}: Added {new_triples} triples, total: {self.edge_count}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to parse Turtle: {e}")
+            return False
+    
+    def extract_current_topics(self) -> Set[str]:
+        """Extract main topics from the current graph."""
+        topics = set()
+        
+        # Get entities with labels
+        for subj, pred, obj in self.graph.triples((None, RDFS.label, None)):
+            if isinstance(obj, Literal):
+                topics.add(str(obj).lower())
+                
+        return topics
+    
+    def get_turtle_dump(self) -> str:
+        """Get current graph as Turtle format."""
+        try:
+            header = f"""# Session Graph Dump
+# Session: {self.session_id}
+# Created: {self.created_at.isoformat()}
+# Nodes: {self.node_count}, Edges: {self.edge_count}
+# Last Updated: {datetime.now(timezone.utc).isoformat()}
+
+"""
+            return header + self.graph.serialize(format='turtle')
+        except Exception as e:
+            logger.error(f"Failed to serialize graph: {e}")
+            return f"# Error serializing graph: {e}\n"
+    
+    def clear_graph(self, reason: str = "Topic change"):
+        """Clear the cumulative graph."""
+        old_edge_count = self.edge_count
+        self.graph = Graph()
+        
+        # Re-bind namespaces
+        self.graph.bind("bbp", BBP)
+        self.graph.bind("schema", SCHEMA)
+        self.graph.bind("prov", PROV)
+        self.graph.bind("rdfs", RDFS)
+        self.graph.bind("rdf", RDF)
+        
+        self.node_count = 0
+        self.edge_count = 0
+        self.last_topics.clear()
+        
+        logger.info(f"🧹 Session {self.session_id[:8]}: Cleared {old_edge_count} triples. Reason: {reason}")
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get graph statistics."""
+        return {
+            "session_id": self.session_id,
+            "node_count": self.node_count,
+            "edge_count": self.edge_count,
+            "topic_count": len(self.last_topics),
+            "created_at": self.created_at.isoformat(),
+            "size_mb": len(self.get_turtle_dump()) / (1024 * 1024)
+        }
 
 class ParliamentaryGraphQuerier:
     """Database querier with full search functionality."""
@@ -432,22 +536,21 @@ def convert_markdown_to_html_and_filter_links(markdown_text: str) -> str:
         return markdown_text
 
 class ParliamentarySystem:
-    """Main parliamentary system using ADK patterns with fixed session management."""
+    """Main parliamentary system using simple session management that works."""
     
     def __init__(self, google_api_key: str):
         self.google_api_key = google_api_key
         self.querier = ParliamentaryGraphQuerier()
         self.conversation_history = {}  # Store by session_id
+        self.session_graphs = {}  # Store SessionGraphState by session_id
         
-        # Create session service and runner once
-        from google.adk.sessions import InMemorySessionService
-        self.session_service = InMemorySessionService()
-        self.runner = None
+        # Track current session for tool context
+        self.current_session_id = None
         
-        # Create search tools using ADK FunctionTool
+        # Create enhanced search tools with session context
         def search_parliament_hybrid(query: str, hops: int = 2, limit: int = 5) -> str:
             """
-            Search parliamentary records using hybrid search.
+            Search parliamentary records using hybrid search with session graph integration.
             
             Args:
                 query: Search query for parliamentary information
@@ -474,66 +577,189 @@ class ParliamentarySystem:
                 turtle_data = self.querier.to_turtle(subgraph)
                 
                 # Get provenance data
+                provenance_data = ""
                 if seed_uris:
-                    provenance_data = self.querier.get_provenance_turtle(list(seed_uris)[:5])
-                    combined_data = turtle_data + "\n\n# PROVENANCE DATA:\n" + provenance_data
-                    return combined_data
+                    provenance_turtle = self.querier.get_provenance_turtle(list(seed_uris)[:5])
+                    provenance_data = f"\n\n# PROVENANCE DATA:\n{provenance_turtle}"
                 
-                return turtle_data
+                combined_data = turtle_data + provenance_data
+                
+                # Update session graph if we have session context
+                if self.current_session_id:
+                    try:
+                        session_graph = self.get_or_create_session_graph(self.current_session_id)
+                        main_data = turtle_data.split("# PROVENANCE DATA:")[0].strip()
+                        
+                        if main_data and not main_data.startswith("# Error"):
+                            session_graph.add_turtle_data(main_data)
+                            session_graph.last_topics.update(session_graph.extract_current_topics())
+                            logger.info(f"📈 Updated session graph: {session_graph.get_stats()}")
+                    except Exception as e:
+                        logger.warning(f"Failed to update session graph: {e}")
+                
+                logger.info(f"🎯 Found {len(subgraph.get('nodes', []))} nodes, {len(subgraph.get('edges', []))} edges")
+                
+                return combined_data
                 
             except Exception as e:
                 logger.error(f"Parliament search failed: {e}")
                 return f"# Error searching parliament: {str(e)}\n"
         
-        def clear_conversation_context(reason: str = "Starting new topic") -> str:
+        def clear_session_graph(reason: str = "Topic change detected") -> str:
             """
-            Clear conversation history to start fresh.
+            Clear the cumulative session graph when topic changes significantly.
             
             Args:
-                reason: Why you're clearing the context
+                reason: Why you're clearing the session graph
             
             Returns:
-                Confirmation message
+                Confirmation message with graph statistics
             """
-            # Note: We can't access session_id here, so this will be handled in process_query
-            logger.info(f"🧹 Conversation context clear requested: {reason}")
-            return f"Conversation context cleared successfully. Reason: {reason}"
+            if self.current_session_id:
+                try:
+                    session_graph = self.get_or_create_session_graph(self.current_session_id)
+                    old_stats = session_graph.get_stats()
+                    session_graph.clear_graph(reason)
+                    logger.info(f"🧹 Session graph cleared: {reason}")
+                    return f"Session graph cleared successfully. Previous state: {old_stats['edge_count']} edges. Reason: {reason}"
+                except Exception as e:
+                    logger.error(f"Failed to clear session graph: {e}")
+                    return f"Error clearing session graph: {e}"
+            else:
+                return "No active session to clear"
         
-        # Create the main agent with tools
+        def get_session_graph_stats() -> str:
+            """
+            Get statistics about the current session's cumulative graph.
+            
+            Returns:
+                JSON string with graph statistics
+            """
+            if self.current_session_id:
+                try:
+                    session_graph = self.get_or_create_session_graph(self.current_session_id)
+                    stats = session_graph.get_stats()
+                    return json.dumps(stats, indent=2)
+                except Exception as e:
+                    logger.error(f"Failed to get session stats: {e}")
+                    return json.dumps({"error": str(e)})
+            else:
+                return json.dumps({"error": "No active session"})
+        
+        bb_timezone = pytz.timezone("America/Barbados")
+        current_date = datetime.now(bb_timezone).strftime("%Y-%m-%d")
+
+        # Create the main agent with enhanced tools
         self.agent = LlmAgent(
             name="YuhHearDem",
             model="gemini-2.5-flash-preview-05-20",
-            description="AI assistant for Barbados Parliament information",
+            description="AI assistant for Barbados Parliament with cumulative graph memory",
             planner=BuiltInPlanner(thinking_config=types.ThinkingConfig(thinking_budget=0)),
-            instruction="""You are YuhHearDem, a friendly AI assistant helping people understand Barbados Parliament.
+            instruction=f"""You are YuhHearDem, a friendly AI assistant helping people understand Barbados Parliament with enhanced memory capabilities.
 
-## CORE BEHAVIOR
-- ALWAYS search for specific parliamentary information when users ask about topics, ministers, policies, or issues
-- Use search_parliament_hybrid tool for ANY question about parliamentary matters
-- NEVER say "Let me search" or "Searching" - just provide results directly
-- Always end responses with helpful follow-up suggestions to encourage continued exploration
+Current Date: {current_date}
 
-## WHEN TO SEARCH (ALWAYS search for these):
+## CORE BEHAVIOR WITH SESSION MEMORY & TEMPORAL FOCUS
+- ALWAYS search for specific parliamentary information when users ask about topics
+- **PRIORITIZE RECENT CONTENT**: Focus on the most recent parliamentary sessions, debates, and announcements
+- Build up cumulative knowledge in your session graph as conversations progress, emphasizing temporal connections
+- Use clear_session_graph tool when topics change significantly or user asks unrelated questions
+- Process Turtle data to understand relationships and build comprehensive responses with chronological awareness
+
+## ENHANCED MEMORY CAPABILITIES WITH TEMPORAL EMPHASIS
+Your session maintains a cumulative knowledge graph that:
+- Grows with each search, building richer context **with emphasis on recent developments**
+- Connects related concepts across multiple queries **while tracking chronological progression**
+- Provides deeper insights as conversations develop **showing how issues evolve over time**
+- **Prioritizes recent information** while maintaining historical context when relevant
+- Gets cleared when topics shift significantly
+
+## TEMPORAL SEARCH STRATEGY
+**ALWAYS prioritize recent content by:**
+- Using temporal keywords: "recent", "latest", "current", "2024", "2025"
+- Looking for the most recent parliamentary sessions first
+- Connecting current discussions to historical context when relevant
+- Tracking policy developments and changes over time
+- Highlighting emerging issues and trending topics
+
+## WHEN TO SEARCH (ALWAYS search for these with temporal focus):
 - Any mention of: water, infrastructure, education, health, budget, policies, economy, agriculture, tourism, schools, hospitals, music, culture, soca, carnival, arts, sports
-- Questions about ministers, MPs, or government officials
-- Parliamentary debates, sessions, bills, or legislation
-- Recent events, announcements, or government decisions
-- Specific topics like "water issues", "education funding", "healthcare policy", "schools", "soca music", "culture", "arts"
-- ANY question about what happened in parliament or what someone said
-- ANY topic that might have been discussed in parliament (when in doubt, search!)
+- Questions about ministers, MPs, or government officials **especially their recent statements**
+- Parliamentary debates, sessions, bills, or legislation **focusing on latest developments**
+- **Recent events, announcements, or government decisions (HIGHEST PRIORITY)**
+- Specific topics like "water issues", "education funding", "healthcare policy" **with emphasis on current status**
+- ANY question about what happened in parliament or what someone said **prioritizing recent sessions**
+- Follow-up questions that can build on existing session knowledge **while updating with latest information**
+- Questions about current government priorities, recent policy changes, or ongoing initiatives
 
-## SEARCH FIRST APPROACH
+## WHEN TO CLEAR SESSION GRAPH
+Use clear_session_graph tool when:
+- User explicitly changes topic to something completely unrelated
+- Conversation shifts from one policy area to a totally different domain
+- User says "let's talk about something else" or similar
+- You detect the current graph knowledge is no longer relevant
+- Session becomes too cluttered with unrelated information
+- **Time gap makes previous context less relevant to current discussions**
+
+**DO NOT clear for:**
+- Related subtopics (education → school funding → teacher salaries)
+- Temporal shifts within same domain (past policies → current policies → future plans)
+- Different aspects of same domain (water supply → water quality → infrastructure)
+- Questions about recent developments in previously discussed topics
+
+**IMPORTANT: When you clear the session graph, IMMEDIATELY proceed to search for the new topic. Do not ask for permission or confirmation - just clear and search in sequence.**
+
+## TURTLE DATA PROCESSING WITH TEMPORAL AWARENESS
+When you receive Turtle data:
+1. Extract entities, relationships, and properties **with attention to temporal markers**
+2. Understand the semantic connections **and their chronological context**
+3. **Prioritize information from recent parliamentary sessions**
+4. Build responses that synthesize information across related entities **showing temporal progression**
+5. Reference specific URIs when discussing entities **with emphasis on recent content**
+6. Use provenance information to cite video sources with timestamps **prioritizing recent sessions**
+7. **Identify trends, changes, and developments over time**
+
+## SEARCH FIRST APPROACH WITH TEMPORAL PRIORITY
 For questions about parliamentary topics:
-1. IMMEDIATELY use search_parliament_hybrid tool with relevant keywords
-2. Extract key information from search results
-3. Provide response with specific details and sources
-4. Include YouTube links with timestamps when available
-5. End with 2-3 relevant follow-up suggestions
+1. If topic is unrelated to current session: FIRST use clear_session_graph, THEN immediately use search_parliament_hybrid **with recent/current focus**
+2. If topic is related: IMMEDIATELY use search_parliament_hybrid tool with relevant keywords **plus temporal qualifiers**
+3. Process Turtle results to extract key information **prioritizing recent content**
+4. Synthesize with any existing session graph knowledge **emphasizing recent developments**
+5. Provide response with specific details and sources **highlighting what's current vs historical**
+6. Include YouTube links with timestamps when available **prioritizing recent parliamentary sessions**
+7. End with 2-3 relevant follow-up suggestions **focused on recent developments or emerging issues**
 
-## SEARCH PARAMETERS
-- Use specific search terms related to the topic
-- Set limit between 5-8 for good coverage
-- Use 2-3 hops to get related information
+## SEARCH PARAMETERS WITH TEMPORAL FOCUS
+- Use specific search terms related to the topic **plus temporal keywords**: "recent", "latest", "current", "2024", "2025"
+- Set limit between 5-8 for good coverage **with preference for recent results**
+- Use 2-3 hops to get related information for comprehensive context **while maintaining temporal relevance**
+- **Examples of temporal search terms:**
+  - "recent water infrastructure updates"
+  - "latest education policy 2024"
+  - "current health minister statements"
+  - "budget 2025 discussions"
+
+## RESPONSE FORMAT - CONVERSATIONAL WITH RICH CONTEXT & TEMPORAL AWARENESS
+- **Lead with the most recent information available**
+- Start directly with synthesized information from your growing knowledge base **emphasizing current status**
+- Reference connections to previously discussed topics when relevant **showing how things have evolved**
+- **Clearly distinguish between recent developments and historical context**
+- Include video sources with working YouTube URLs and timestamps **prioritizing recent parliamentary sessions**
+- Use natural paragraphs to organize information **with chronological flow when relevant**
+- Quote parliamentary statements using blockquotes **with dates when available**
+- **Highlight emerging trends, policy changes, and recent government priorities**
+- Always end with contextual follow-up suggestions based on accumulated knowledge **focusing on recent developments**
+
+## TEMPORAL LANGUAGE PATTERNS
+Use language that emphasizes recency and development:
+- "In recent parliamentary sessions..."
+- "The latest discussions show..."
+- "Recent developments indicate..."
+- "Currently, the government is..."
+- "As of the most recent debates..."
+- "This builds on earlier discussions when..."
+- "The situation has evolved since..."
+- "Recent policy changes suggest..."
 
 ## MARKDOWN FORMATTING REQUIREMENTS
 **CRITICAL: ALL responses must use valid markdown syntax. Follow these rules strictly:**
@@ -546,79 +772,66 @@ For questions about parliamentary topics:
 - If no valid URL is available, use plain text instead of broken links
 
 ### Text Formatting - SIMPLE ONLY
-- Use `**bold**` for key topics and emphasis
+- Use `**bold**` for key topics and emphasis **especially recent developments**
 - Use `*italic*` sparingly for speaker names or emphasis
 - Use `-` for bullet points when listing items
-- Use `>` for blockquotes when citing parliamentary statements
+- Use `>` for blockquotes when citing parliamentary statements **with dates when available**
 - **NO HEADERS**: Do not use `#`, `##`, `###` - keep responses conversational with paragraphs only
 
-### Content Structure - CONVERSATIONAL
+### Content Structure - CONVERSATIONAL WITH TEMPORAL FLOW
 - Start directly with content - NO headers or titles
-- Use natural paragraphs to organize information
+- **Begin with most recent information when available**
+- Use natural paragraphs to organize information **with chronological awareness**
 - Use bullet points only when listing specific items
-- Use blockquotes for direct parliamentary quotes: `> "Quote here" - Speaker Name`
+- Use blockquotes for direct parliamentary quotes: `> "Quote here" - Speaker Name, [Date if available]`
 - Keep formatting minimal and conversational
+- **Show temporal progression when discussing policy developments**
 
-## RESPONSE FORMAT
-- Provide specific information found in search using valid markdown
-- Include video sources ONLY if you have valid YouTube URLs like: 
-  - "According to the **[Parliamentary Session on Education](https://youtube.com/watch?v=abc123&t=300s)**..."
-  - If URL is invalid/missing, use: "According to parliamentary discussions on education..." (no link)
-- If search finds limited results, acknowledge and suggest related searches
-- NEVER include "searching" or "let me search" text
-- ALWAYS end with follow-up suggestions formatted as:
-  ```markdown
-  **Explore More:**
-  - Would you like to know more about [related topic]?
-  - I can also search for information about [related area]
-  - Other topics you might find interesting: [suggestion 1], [suggestion 2]
-  ```
+## EXAMPLE BEHAVIOR PATTERNS WITH TEMPORAL FOCUS
 
-## QUALITY CHECKS BEFORE RESPONDING
-1. **Verify all links**: Ensure every `[text](url)` has a real, working URL or remove the link
-2. **Check markdown syntax**: Ensure headers, lists, and formatting are correct
-3. **Validate YouTube URLs**: Must be complete and follow proper format
-4. **No broken formatting**: No unclosed brackets, missing spaces, or malformed syntax
+**First Query: "Tell me about schools"**
+- Search for recent school/education discussions and policies
+- Build initial session graph with education entities **emphasizing recent developments**
+- Respond with latest findings and suggest related current areas
+- Highlight any recent policy changes or new initiatives
 
-## EXAMPLE BEHAVIOR
-User: "Tell me about schools"
-Action: IMMEDIATELY call search_parliament_hybrid(query="schools education", limit=6, hops=2)
-Response Format:
-```markdown
-Parliamentary discussions have recently focused on **school infrastructure improvements** and **education funding allocations**. The Minister of Education outlined plans for new classroom construction and teacher training programs.
+**Follow-up: "What about funding?"**
+- Search for recent funding information and announcements
+- Add to existing education graph (cumulative) **with temporal connections**
+- Synthesize recent funding info with previous school context
+- Show how funding discussions have evolved recently
 
-According to the [Parliamentary Education Session](https://youtube.com/watch?v=REAL_ID&t=120s), the government allocated $2.5 million for school repairs across the island.
+**Topic Change: "Tell me about agriculture"**
+- Recognize significant topic shift
+- Use clear_session_graph("Changing from education to agriculture")
+- Search for recent agriculture data and current agricultural policies
 
-> "We must prioritize our children's education through better facilities" - Minister of Education
+## QUALITY RESPONSES WITH TEMPORAL AWARENESS
+- **Lead with the most current and relevant information**
+- Synthesize information across multiple related entities in your session graph **with temporal context**
+- Show how current query connects to previous discussion **and how things have developed over time**
+- Provide rich, contextual responses that demonstrate growing understanding **of current issues**
+- Use accumulated knowledge to offer deeper insights **about recent trends and developments**
+- **Always prioritize the most recent parliamentary sessions and discussions**
+- **Highlight policy evolution, emerging issues, and current government priorities**
+- Always guide users toward exploring connections within accumulated knowledge **with emphasis on recent developments**
 
-**Would you like to know more about education funding? I can also search for information about teacher training programs or school infrastructure projects.**
-```
-
-User: "about soca music"
-Action: IMMEDIATELY call search_parliament_hybrid(query="soca music culture", limit=6, hops=2)
-Response: Provide findings using conversational paragraphs, then suggest: 
-
-**Interested in other cultural topics? I can search for discussions about carnival or arts funding. Related areas: cultural heritage, music industry support.**
-
-## ERROR PREVENTION
-- **Before sending response**: Double-check every `[text](url)` link
-- **If URL is broken/missing**: Convert to plain text or remove entirely
-- **If unsure about link validity**: Don't include the link - use plain text description
-- **Always preview**: Ensure response renders as valid markdown
-
-Remember: When in doubt, SEARCH FIRST, then respond with the findings using PERFECT MARKDOWN! NEVER respond without searching for ANY topic that might have been discussed in parliament. Always guide users toward deeper exploration with helpful follow-up suggestions formatted correctly.
-""",
+Remember: Your session graph memory allows you to build increasingly sophisticated understanding as conversations develop, with special emphasis on tracking recent developments and current issues. Use this capability to provide richer, more connected responses that highlight what's happening now while maintaining relevant historical context when needed.""",
             tools=[
                 FunctionTool(search_parliament_hybrid),
-                FunctionTool(clear_conversation_context)
+                FunctionTool(clear_session_graph),
+                FunctionTool(get_session_graph_stats)
             ],
             generate_content_config=GenerateContentConfig(
-                temperature=0.1,  # Very low temperature for consistent tool use
+                temperature=0.1,
                 max_output_tokens=5000
             )
         )
         
-        # Initialize runner
+        # Use simpler session approach - just create sessions when we need them
+        from google.adk.sessions import InMemorySessionService
+        self.session_service = InMemorySessionService()
+        
         from google.adk.runners import Runner
         self.runner = Runner(
             agent=self.agent,
@@ -626,39 +839,66 @@ Remember: When in doubt, SEARCH FIRST, then respond with the findings using PERF
             app_name="YuhHearDem"
         )
     
+    def get_or_create_session_graph(self, session_id: str) -> SessionGraphState:
+        """Get or create session graph state."""
+        if session_id not in self.session_graphs:
+            self.session_graphs[session_id] = SessionGraphState(session_id)
+            logger.info(f"📊 Created new session graph for {session_id[:8]}")
+        return self.session_graphs[session_id]
+    
     async def get_or_create_session(self, user_id: str, session_id: Optional[str] = None) -> str:
-        """Get existing session or create a new one."""
-        if session_id:
-            # Try to get existing session - check if it exists in our conversation history
-            if session_id in self.conversation_history:
-                logger.info(f"✅ Found existing session: {session_id[:8]}...")
-                return session_id
+        """Get existing session or create a new one - simple approach."""
+        # Always create a new ADK session - this is simpler and more reliable
+        try:
+            # Create a fresh ADK session each time
+            adk_session = await self.session_service.create_session(
+                app_name="YuhHearDem",
+                user_id=user_id
+            )
+            
+            # Use the provided session_id for our tracking, ADK session_id for the runner
+            tracking_session_id = session_id or adk_session.id
+            
+            if tracking_session_id not in self.conversation_history:
+                self.conversation_history[tracking_session_id] = []
+                logger.info(f"✅ Created new session tracking: {tracking_session_id[:8]}...")
             else:
-                logger.warning(f"Session {session_id[:8]}... not found in conversation history, creating new one")
-        
-        # Create new session
-        session = await self.session_service.create_session(
-            app_name="YuhHearDem",
-            user_id=user_id
-        )
-        logger.info(f"✅ Created new session: {session.id[:8]}...")
-        return session.id
+                logger.info(f"✅ Reusing conversation history for: {tracking_session_id[:8]}...")
+            
+            # Always return the fresh ADK session ID for the runner to use
+            return adk_session.id
+            
+        except Exception as e:
+            logger.error(f"Failed to create session: {e}")
+            # Fallback to simple UUID
+            fallback_id = str(uuid.uuid4())
+            logger.warning(f"Using fallback session ID: {fallback_id[:8]}...")
+            return fallback_id
     
     async def process_query(self, query: str, user_id: str = "user", session_id: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
-        """Process a query through the parliamentary agent."""
+        """Process a query through the enhanced parliamentary agent."""
         try:
             logger.info(f"🚀 Processing query: {query[:50]}...")
             
-            # Get or create session
-            actual_session_id = await self.get_or_create_session(user_id, session_id)
+            # Get or create session - this returns the ADK session ID
+            adk_session_id = await self.get_or_create_session(user_id, session_id)
+            
+            # Use the provided session_id for our tracking, or fall back to ADK session ID
+            tracking_session_id = session_id or adk_session_id
+            
+            # Set current session context for tools
+            self.current_session_id = tracking_session_id
+            
+            # Get session graph
+            session_graph = self.get_or_create_session_graph(tracking_session_id)
             
             # Initialize conversation history for this session if needed
-            if actual_session_id not in self.conversation_history:
-                self.conversation_history[actual_session_id] = []
+            if tracking_session_id not in self.conversation_history:
+                self.conversation_history[tracking_session_id] = []
             
-            # Build context from conversation history
+            # Build context from conversation history AND session graph
             context = ""
-            session_history = self.conversation_history[actual_session_id]
+            session_history = self.conversation_history[tracking_session_id]
             if session_history:
                 context = "\n\nRECENT CONVERSATION:\n"
                 for exchange in session_history[-3:]:
@@ -666,21 +906,41 @@ Remember: When in doubt, SEARCH FIRST, then respond with the findings using PERF
                     assistant_preview = exchange.get('assistant', '')[:200]
                     context += f"Assistant: {assistant_preview}...\n\n"
             
-            # Create message with context
+            # Add session graph context
+            if session_graph.edge_count > 0:
+                graph_stats = session_graph.get_stats()
+                context += f"\n\nSESSION GRAPH CONTEXT:\n"
+                context += f"Current session has {graph_stats['edge_count']} relationships across {graph_stats['node_count']} entities.\n"
+                context += f"Previous topics: {', '.join(list(session_graph.last_topics)[:5])}\n"
+                
+                # Include a sample of the current graph for context
+                turtle_sample = session_graph.get_turtle_dump()
+                if len(turtle_sample) > 2000:
+                    turtle_sample = turtle_sample[:2000] + "\n# ... (truncated)\n"
+                context += f"Current graph sample:\n{turtle_sample}\n"
+            
+            # Create message with enhanced context
             full_query = f"{context}CURRENT QUESTION: {query}"
             user_message = Content(role="user", parts=[Part.from_text(text=full_query)])
             
             # Run agent and collect ALL events before responding
             all_events = []
-            events = self.runner.run(
-                user_id=user_id,
-                session_id=actual_session_id,
-                new_message=user_message
-            )
-            
-            # Collect all events first (don't stream intermediate responses)
-            for event in events:
-                all_events.append(event)
+            try:
+                events = self.runner.run(
+                    user_id=user_id,
+                    session_id=adk_session_id,  # Use the ADK session_id for the runner
+                    new_message=user_message
+                )
+                
+                # Collect all events first (don't stream intermediate responses)
+                for event in events:
+                    all_events.append(event)
+                
+            except Exception as runner_error:
+                logger.error(f"ADK Runner failed: {runner_error}")
+                # Clear session context on error
+                self.current_session_id = None
+                return f"I encountered a technical issue processing your query. Please try again.", {"success": False}
             
             # Now process events and get the final response only
             response_text = ""
@@ -700,14 +960,26 @@ Remember: When in doubt, SEARCH FIRST, then respond with the findings using PERF
             
             # Trim history if too long
             if len(session_history) > 8:
-                self.conversation_history[actual_session_id] = session_history[-8:]
+                self.conversation_history[tracking_session_id] = session_history[-8:]
             
-            return response_text, {"success": True, "session_id": actual_session_id}
+            # Clear session context
+            self.current_session_id = None
+            
+            # Return response with session graph stats
+            return response_text, {
+                "success": True, 
+                "session_id": tracking_session_id,  # Return the tracking session_id to the frontend
+                "graph_stats": session_graph.get_stats()
+            }
             
         except Exception as e:
             logger.error(f"Query processing failed: {e}")
             import traceback
             traceback.print_exc()
+            
+            # Clear session context on error
+            self.current_session_id = None
+            
             return f"❌ Error processing query: {str(e)}", {"success": False}
     
     def close(self):
@@ -731,38 +1003,34 @@ def create_system() -> ParliamentarySystem:
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
-    logger.info("🚀 Starting Parliamentary Chatbot System...")
+    logger.info("🚀 Starting Enhanced Parliamentary Chatbot System...")
     
     global parliamentary_system
     try:
         parliamentary_system = create_system()
-        logger.info("✅ Parliamentary System created successfully")
+        logger.info("✅ Enhanced Parliamentary System created successfully")
     except Exception as e:
         logger.error(f"❌ Failed to create Parliamentary system: {e}")
         parliamentary_system = None
     
-    logger.info("✅ Parliamentary Chatbot System ready!")
+    logger.info("✅ Enhanced Parliamentary Chatbot System ready!")
     
     yield
     
     # Shutdown
-    logger.info("👋 Shutting down Parliamentary Chatbot System...")
+    logger.info("👋 Shutting down Enhanced Parliamentary Chatbot System...")
     if parliamentary_system:
         parliamentary_system.close()
 
 # Create FastAPI app
 app = FastAPI(
-    title="Parliamentary Research API",
-    description="AI-powered Parliamentary research system with ADK",
-    version="2.0.0",
+    title="Enhanced Parliamentary Research API",
+    description="AI-powered Parliamentary research system with session graph persistence",
+    version="3.3.0",
     lifespan=lifespan
 )
 
-# Mount static files and templates
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-
-# Setup templates (assumes templates/index.html exists)
+# Setup templates
 templates = Jinja2Templates(directory="templates")
 
 # CORS middleware
@@ -800,12 +1068,14 @@ async def process_query_with_events(query: str, user_id: str, session_id: str):
             
             # Use actual session ID from the response
             actual_session_id = status.get("session_id", session_id)
+            graph_stats = status.get("graph_stats", {})
             
             yield format_sse_event("response_ready", "Assistant", "Response completed", {
                 "response": processed_response,
                 "message_id": str(uuid.uuid4()),
                 "session_id": actual_session_id,
-                "type": "parliamentary"
+                "type": "parliamentary",
+                "graph_stats": graph_stats
             })
         else:
             yield format_sse_event("error", "System", f"Error: {response_text}")
@@ -825,10 +1095,10 @@ async def root(request: Request):
 async def api_info():
     """API information endpoint."""
     return {
-        "message": "YuhHearDem - Parliamentary Research API with ADK",
+        "message": "YuhHearDem - Enhanced Parliamentary Research API with Simple Session Management",
         "status": "running",
-        "version": "2.0.0",
-        "features": ["adk_integration", "database_search", "conversational_ai"]
+        "version": "3.3.0",
+        "features": ["simple_session_management", "session_graph_persistence", "turtle_processing", "cumulative_memory"]
     }
 
 @app.get("/health")
@@ -848,6 +1118,7 @@ async def health_check():
         db_connected = False
     
     total_conversations = sum(len(history) for history in parliamentary_system.conversation_history.values())
+    total_graph_edges = sum(graph.edge_count for graph in parliamentary_system.session_graphs.values())
     
     return {
         "status": "healthy" if db_connected else "degraded",
@@ -855,7 +1126,27 @@ async def health_check():
         "database_connected": db_connected,
         "active_sessions": len(parliamentary_system.conversation_history),
         "total_conversations": total_conversations,
-        "version": "2.0.0"
+        "session_graphs": len(parliamentary_system.session_graphs),
+        "total_graph_edges": total_graph_edges,
+        "version": "3.3.0"
+    }
+
+@app.get("/session/{session_id}/graph")
+async def get_session_graph(session_id: str):
+    """Get the current session graph as Turtle format."""
+    if not parliamentary_system:
+        raise HTTPException(status_code=503, detail="System not initialized")
+    
+    if session_id not in parliamentary_system.session_graphs:
+        raise HTTPException(status_code=404, detail="Session graph not found")
+    
+    session_graph = parliamentary_system.session_graphs[session_id]
+    turtle_data = session_graph.get_turtle_dump()
+    
+    return {
+        "session_id": session_id,
+        "turtle_data": turtle_data,
+        "stats": session_graph.get_stats()
     }
 
 @app.post("/query", response_model=QueryResponse)
@@ -908,9 +1199,10 @@ async def query_stream(request: QueryRequest):
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
-    logger.info("🚀 Starting Parliamentary Chatbot with ADK")
+    logger.info("🚀 Starting Enhanced Parliamentary Chatbot with Simple Session Management")
     logger.info(f"📡 Server will run on 0.0.0.0:{port}")
     logger.info("📋 Required: GOOGLE_API_KEY, MONGODB_CONNECTION_STRING")
+    logger.info("🔧 Fixed: Simple session management that actually works")
     
     uvicorn.run(
         "yuhheardem_chatbot:app",
