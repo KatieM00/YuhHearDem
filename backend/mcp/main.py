@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Parliamentary Graph Query MCP Server - Enhanced with Hybrid Search
+Parliamentary Graph Query MCP Server - Enhanced with Clean Output
 ----------------------------------------------------------------
 
-Enhanced version that combines PageRank importance with semantic similarity
-for better search results. Includes topic-specific PageRank and authority-aware queries.
+Enhanced version with cleaned up output:
+- De-duplicated labels and names
+- Removed ranking information for concise results
+- Provenance returned in Turtle format with minimal fields
 """
 
 import os
@@ -58,10 +60,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
-#                      ENHANCED GRAPH QUERIER WITH HYBRID SEARCH             #
+#                      ENHANCED GRAPH QUERIER WITH CLEAN OUTPUT              #
 # --------------------------------------------------------------------------- #
 class EnhancedGraphQuerier:
-    """Enhanced graph querier with hybrid PageRank + semantic search capabilities."""
+    """Enhanced graph querier with clean, concise output."""
 
     def __init__(self):
         self.client = None
@@ -125,39 +127,101 @@ class EnhancedGraphQuerier:
             logger.error(f"❌ Failed to load embedding model: {e}")
             raise RuntimeError(f"Vector search is mandatory but failed to initialize: {e}")
 
+    def _deduplicate_labels(self, labels: List[str]) -> str:
+        """De-duplicate and clean labels, returning the best one."""
+        if not labels:
+            return None
+        
+        # Convert to set to remove exact duplicates
+        unique_labels = list(set(labels))
+        
+        # If only one unique label, return it
+        if len(unique_labels) == 1:
+            return unique_labels[0]
+        
+        # Sort by length and quality - prefer longer, more descriptive labels
+        # but avoid very long ones that might be concatenated
+        def label_quality(label):
+            # Prefer labels that are not too short, not too long, and descriptive
+            length = len(label)
+            if length < 3:
+                return 0  # Too short
+            if length > 100:
+                return 1  # Too long
+            if '(' in label and ')' in label:
+                return 3  # Has parenthetical info
+            return 2  # Good length
+        
+        # Sort by quality then by length
+        sorted_labels = sorted(unique_labels, key=lambda x: (label_quality(x), len(x)), reverse=True)
+        return sorted_labels[0]
+
     def search_nodes(self, query: str, limit: int = 8) -> List[Dict]:
         """Standard vector-only search for backward compatibility."""
         try:
             logger.info(f"🔍 Vector search for: {query}")
             vector_results = self._vector_search_nodes(query, limit)
             
-            # Clean results
+            # Clean and simplify results
+            cleaned_results = []
             for result in vector_results:
-                result.pop("embedding", None)
-                if "_id" in result:
-                    result["_id"] = str(result["_id"])
+                cleaned = self._clean_node_result(result)
+                if cleaned:
+                    cleaned_results.append(cleaned)
             
-            logger.info(f"Vector search found {len(vector_results)} results")
-            return vector_results
+            logger.info(f"Vector search found {len(cleaned_results)} results")
+            return cleaned_results
             
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
             return []
 
+    def _clean_node_result(self, node: Dict) -> Dict:
+        """Clean and simplify a node result, removing duplicates and unnecessary fields."""
+        if not node:
+            return None
+        
+        # Start with essential fields
+        cleaned = {
+            "uri": node.get("uri"),
+            "type": node.get("type", [])
+        }
+        
+        # Handle labels - deduplicate name and label fields
+        all_labels = []
+        if "label" in node and node["label"]:
+            if isinstance(node["label"], list):
+                all_labels.extend(node["label"])
+            else:
+                all_labels.append(node["label"])
+        
+        if "name" in node and node["name"]:
+            if isinstance(node["name"], list):
+                all_labels.extend(node["name"])
+            else:
+                all_labels.append(node["name"])
+        
+        # Deduplicate and set the best label - ONLY as 'label', remove 'name'
+        best_label = self._deduplicate_labels(all_labels)
+        if best_label:
+            cleaned["label"] = best_label
+        # Explicitly do NOT include 'name' field to avoid duplicates
+        
+        # Include essential content fields but not ranking or video info
+        if "searchable_text" in node:
+            cleaned["searchable_text"] = node["searchable_text"]
+        
+        # Video information removed - only available in provenance
+        
+        # Clean up _id
+        if "_id" in node:
+            cleaned["_id"] = str(node["_id"])
+        
+        return cleaned
+
     def hybrid_search(self, query: str, limit: int = 8, pagerank_weight: float = 0.3, 
                      min_pagerank_score: float = 0.00001) -> List[Dict]:
-        """
-        Hybrid search combining PageRank importance with semantic similarity.
-        
-        Args:
-            query: Search query text
-            limit: Number of results to return
-            pagerank_weight: Weight of PageRank in final score (0-1, default 0.3)
-            min_pagerank_score: Minimum PageRank score to consider
-            
-        Returns:
-            List of nodes ranked by hybrid score
-        """
+        """Hybrid search with clean output."""
         try:
             logger.info(f"🎯 Hybrid search for: '{query}' (PageRank weight: {pagerank_weight:.1%})")
             
@@ -212,27 +276,25 @@ class EnhancedGraphQuerier:
                     "$project": {
                         "uri": 1,
                         "label": 1,
+                        "name": 1,
                         "type": 1,
-                        "searchable_text": 1,
-                        "pagerank_score": 1,
-                        "pagerank_rank": 1,
-                        "similarity_score": 1,
-                        "hybrid_score": 1,
-                        "source_video": 1,
-                        "video_title": 1
+                        "searchable_text": 1
+                        # Removed video fields - only in provenance
                     }
                 }
             ]
             
             results = list(self.nodes.aggregate(pipeline))
             
-            # Clean results
+            # Clean and simplify results
+            cleaned_results = []
             for result in results:
-                if "_id" in result:
-                    result["_id"] = str(result["_id"])
+                cleaned = self._clean_node_result(result)
+                if cleaned:
+                    cleaned_results.append(cleaned)
             
-            logger.info(f"🎯 Hybrid search found {len(results)} results")
-            return results
+            logger.info(f"🎯 Hybrid search found {len(cleaned_results)} results")
+            return cleaned_results
             
         except Exception as e:
             logger.error(f"❌ Hybrid search failed: {e}")
@@ -240,17 +302,7 @@ class EnhancedGraphQuerier:
             return self.search_nodes(query, limit)
 
     def authority_search(self, query: str, limit: int = 8, min_pagerank_rank: int = 1000) -> List[Dict]:
-        """
-        Search for authoritative nodes (high PageRank) related to the query.
-        
-        Args:
-            query: Search query text
-            limit: Number of results to return
-            min_pagerank_rank: Maximum rank to consider (lower numbers = higher authority)
-            
-        Returns:
-            List of authoritative nodes related to the query
-        """
+        """Search for authoritative nodes with clean output."""
         try:
             logger.info(f"👑 Authority search for: '{query}' (max rank: {min_pagerank_rank})")
             
@@ -262,34 +314,28 @@ class EnhancedGraphQuerier:
                 min_pagerank_score=0.00001
             )
             
-            # Filter by rank and sort by authority
-            authority_results = [
-                node for node in candidates 
-                if node.get("pagerank_rank", float('inf')) <= min_pagerank_rank
-            ]
+            # For authority search, we need to check PageRank rank in database
+            # since we removed it from hybrid_search output
+            enhanced_candidates = []
+            for node in candidates:
+                # Get PageRank rank from database
+                db_node = self.nodes.find_one({"uri": node["uri"]}, {"pagerank_rank": 1})
+                if db_node and db_node.get("pagerank_rank", float('inf')) <= min_pagerank_rank:
+                    enhanced_candidates.append((node, db_node.get("pagerank_rank", float('inf'))))
             
-            # Sort by PageRank rank (lower is better)
-            authority_results.sort(key=lambda x: x.get("pagerank_rank", float('inf')))
+            # Sort by PageRank rank (lower is better) and return just the nodes
+            enhanced_candidates.sort(key=lambda x: x[1])
+            authority_results = [node for node, rank in enhanced_candidates[:limit]]
             
             logger.info(f"👑 Found {len(authority_results)} authoritative nodes")
-            return authority_results[:limit]
+            return authority_results
             
         except Exception as e:
             logger.error(f"❌ Authority search failed: {e}")
             return []
 
     def topic_specific_search(self, query: str, limit: int = 8, topic_expansion: int = 50) -> List[Dict]:
-        """
-        Find nodes important within the specific topic domain of the query.
-        
-        Args:
-            query: Search query defining the topic
-            limit: Number of results to return
-            topic_expansion: Number of topic-relevant nodes to consider for local PageRank
-            
-        Returns:
-            List of nodes important within the query's topic domain
-        """
+        """Find nodes important within the specific topic domain of the query."""
         try:
             logger.info(f"🎯 Topic-specific search for: '{query}'")
             
@@ -311,29 +357,27 @@ class EnhancedGraphQuerier:
             # Calculate mini-PageRank within this topic subgraph
             topic_pagerank_scores = self._calculate_topic_pagerank(topic_uris)
             
-            # Combine topic PageRank with original relevance
+            # Combine topic PageRank with original relevance and return top results
             enhanced_results = []
             for node in topic_nodes:
-                enhanced_node = node.copy()
                 uri = node['uri']
+                # Calculate hybrid score but don't include it in output
                 if uri in topic_pagerank_scores:
-                    enhanced_node['topic_pagerank'] = topic_pagerank_scores[uri]
-                    # Hybrid score: topic importance + semantic relevance
-                    enhanced_node['topic_hybrid_score'] = (
+                    topic_hybrid_score = (
                         0.6 * topic_pagerank_scores[uri] + 
-                        0.4 * node.get('similarity_score', 0)
+                        0.4 * 0.5  # Assume reasonable similarity since these came from search
                     )
                 else:
-                    enhanced_node['topic_pagerank'] = 0.0
-                    enhanced_node['topic_hybrid_score'] = 0.4 * node.get('similarity_score', 0)
+                    topic_hybrid_score = 0.2  # Low score for nodes without topic PageRank
                 
-                enhanced_results.append(enhanced_node)
+                enhanced_results.append((node, topic_hybrid_score))
             
-            # Sort by topic-specific hybrid score
-            enhanced_results.sort(key=lambda x: x['topic_hybrid_score'], reverse=True)
+            # Sort by topic-specific hybrid score and return just the nodes
+            enhanced_results.sort(key=lambda x: x[1], reverse=True)
+            final_results = [node for node, score in enhanced_results[:limit]]
             
-            logger.info(f"🎯 Topic-specific search found {len(enhanced_results)} results")
-            return enhanced_results[:limit]
+            logger.info(f"🎯 Topic-specific search found {len(final_results)} results")
+            return final_results
             
         except Exception as e:
             logger.error(f"❌ Topic-specific search failed: {e}")
@@ -341,17 +385,7 @@ class EnhancedGraphQuerier:
 
     def _calculate_topic_pagerank(self, topic_uris: Set[str], damping: float = 0.85, 
                                  max_iterations: int = 50) -> Dict[str, float]:
-        """
-        Calculate PageRank within a topic-specific subgraph.
-        
-        Args:
-            topic_uris: URIs defining the topic subgraph
-            damping: PageRank damping factor
-            max_iterations: Maximum iterations for convergence
-            
-        Returns:
-            Dictionary mapping URIs to topic-specific PageRank scores
-        """
+        """Calculate PageRank within a topic-specific subgraph."""
         try:
             # Get edges between topic nodes
             edges_cursor = self.edges.find({
@@ -398,6 +432,7 @@ class EnhancedGraphQuerier:
             return np.array([])
         
         # Build adjacency information
+        from collections import defaultdict
         out_links = defaultdict(list)
         out_degree = defaultdict(int)
         
@@ -436,7 +471,7 @@ class EnhancedGraphQuerier:
             # Generate query embedding
             query_embedding = self.embedding_model.encode(query).tolist()
             
-            # MongoDB vector search pipeline
+            # MongoDB vector search pipeline - simplified for clean output
             pipeline = [
                 {
                     "$vectorSearch": {
@@ -447,7 +482,16 @@ class EnhancedGraphQuerier:
                         "limit": limit,
                     }
                 },
-                {"$addFields": {"similarity_score": {"$meta": "vectorSearchScore"}}},
+                {
+                    "$project": {
+                        "uri": 1,
+                        "label": 1,
+                        "name": 1,
+                        "type": 1,
+                        "searchable_text": 1
+                        # Removed video fields - only in provenance
+                    }
+                }
             ]
 
             results = list(self.nodes.aggregate(pipeline))
@@ -457,9 +501,6 @@ class EnhancedGraphQuerier:
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
             raise RuntimeError(f"Vector search is mandatory but failed: {e}")
-
-        # Remove fallback text search methods since vector search is mandatory
-        # All search methods now depend on embeddings
 
     def get_connected_nodes(self, uris: Set[str], hops: int = 1) -> Set[str]:
         """Get nodes connected to the given URIs."""
@@ -491,33 +532,52 @@ class EnhancedGraphQuerier:
             return uris
 
     def get_subgraph(self, uris: Set[str]) -> Dict[str, Any]:
-        """Get subgraph for the given URIs."""
+        """Get subgraph for the given URIs with clean, deduplicated nodes."""
         try:
             if len(uris) > 500:
                 uris = set(list(uris)[:500])
             
-            nodes = list(self.nodes.find({"uri": {"$in": list(uris)}}, {"embedding": 0}))
+            # Get raw nodes without embedding, ranking info, and video info (keep name for deduplication)
+            raw_nodes = list(self.nodes.find(
+                {"uri": {"$in": list(uris)}}, 
+                {
+                    "embedding": 0, 
+                    "pagerank_score": 0, 
+                    "pagerank_rank": 0,
+                    "similarity_score": 0,
+                    "hybrid_score": 0,
+                    "source_video": 0,
+                    "video_title": 0
+                    # Keep name and label for deduplication in _clean_node_result
+                }
+            ))
+            
+            # Clean and deduplicate each node
+            cleaned_nodes = []
+            for node in raw_nodes:
+                cleaned = self._clean_node_result(node)
+                if cleaned:
+                    cleaned_nodes.append(cleaned)
+            
             edges = list(self.edges.find({
                 "subject": {"$in": list(uris)}, 
-                "object": {"$in": list(uris)}
+                "object": {"$in": list(uris)},
+                "predicate": {"$ne": "http://schema.org/name"}  # Filter out schema:name edges
             }))
             
-            # Clean MongoDB objects
-            for node in nodes:
-                if "_id" in node:
-                    node["_id"] = str(node["_id"])
+            # Clean MongoDB objects in edges
             for edge in edges:
                 if "_id" in edge:
                     edge["_id"] = str(edge["_id"])
             
-            return {"nodes": nodes, "edges": edges}
+            return {"nodes": cleaned_nodes, "edges": edges}
             
         except Exception as e:
             logger.error(f"Subgraph retrieval failed: {e}")
             return {"nodes": [], "edges": []}
 
     def to_turtle(self, subgraph: Dict[str, Any]) -> str:
-        """Convert subgraph to Turtle format with PageRank annotations."""
+        """Convert subgraph to clean Turtle format without ranking information."""
         try:
             g = Graph()
             
@@ -526,32 +586,27 @@ class EnhancedGraphQuerier:
             g.bind("sess", "http://example.com/barbados-parliament-session/")
             g.bind("rdfs", RDFS)
             g.bind("rdf", RDF)
-            g.bind("pg", "http://example.com/pagerank/")  # PageRank namespace
+            # Don't bind schema namespace to avoid automatic schema:name inference
             
-            # Add nodes with PageRank information
+            # Add nodes - clean and deduplicated
             for node in subgraph["nodes"]:
                 try:
                     uri = URIRef(node["uri"])
-                    if "label" in node:
+                    
+                    # Debug: Check what fields are actually in the cleaned node
+                    logger.debug(f"Node fields: {list(node.keys())} for {uri}")
+                    if "name" in node:
+                        logger.warning(f"Found 'name' field in cleaned node: {node['name']}")
+                    
+                    # Add single deduplicated label only (no schema:name duplication)
+                    if "label" in node and node["label"]:
                         g.add((uri, RDFS.label, Literal(str(node["label"]))))
+                    
+                    # Add types
                     for t in node.get("type", []):
                         g.add((uri, RDF.type, URIRef(t)))
                     
-                    # Add PageRank information if available
-                    if "pagerank_score" in node and node["pagerank_score"] is not None:
-                        g.add((uri, URIRef("http://example.com/pagerank/score"), 
-                              Literal(float(node["pagerank_score"]))))
-                    if "pagerank_rank" in node and node["pagerank_rank"] is not None:
-                        g.add((uri, URIRef("http://example.com/pagerank/rank"), 
-                              Literal(int(node["pagerank_rank"]))))
-                    
-                    # Add search scores if available
-                    if "similarity_score" in node and node["similarity_score"] is not None:
-                        g.add((uri, URIRef("http://example.com/pagerank/similarity"), 
-                              Literal(float(node["similarity_score"]))))
-                    if "hybrid_score" in node and node["hybrid_score"] is not None:
-                        g.add((uri, URIRef("http://example.com/pagerank/hybrid_score"), 
-                              Literal(float(node["hybrid_score"]))))
+                    # Explicitly do NOT add any name or schema:name properties
                     
                 except Exception as e:
                     logger.warning(f"Skipping node: {e}")
@@ -569,12 +624,114 @@ class EnhancedGraphQuerier:
             
             header = f"# Generated {datetime.now(timezone.utc).isoformat()}Z\n"
             header += f"# Nodes: {len(subgraph['nodes'])}, Edges: {len(subgraph['edges'])}\n"
-            header += f"# Enhanced with PageRank and hybrid search scores\n\n"
+            header += f"# Clean output without ranking or video information\n\n"
             
             return header + g.serialize(format="turtle")
             
         except Exception as e:
             logger.error(f"Turtle serialization failed: {e}")
+            return f"# Error: {str(e)}\n"
+
+    def provenance_to_turtle(self, node_uris: List[str], include_transcript: bool = True) -> str:
+        """Get provenance information and return as clean Turtle format."""
+        try:
+            logger.info(f"📚 Getting provenance for {len(node_uris)} nodes as Turtle")
+            
+            g = Graph()
+            
+            # Add prefixes
+            g.bind("bbp", "http://example.com/barbados-parliament-ontology#")
+            g.bind("prov", "http://www.w3.org/ns/prov#")
+            g.bind("schema", "http://schema.org/")
+            g.bind("xsd", "http://www.w3.org/2001/XMLSchema#")
+            g.bind("rdfs", RDFS)
+            
+            PROV = Namespace("http://www.w3.org/ns/prov#")
+            SCHEMA = Namespace("http://schema.org/")
+            
+            for uri in node_uris[:10]:  # Limit to prevent explosion
+                try:
+                    node_uri = URIRef(uri)
+                    
+                    # Get related statements with minimal fields
+                    projection = {
+                        "subject": 1,
+                        "predicate": 1, 
+                        "object": 1,
+                        "source_video": 1,
+                        "video_title": 1,
+                        "start_offset": 1,
+                        "end_offset": 1
+                    }
+                    
+                    if include_transcript:
+                        projection["transcript_text"] = 1
+                    
+                    statements = list(self.statements.find({
+                        "$or": [
+                            {"subject": uri},
+                            {"predicate": uri}, 
+                            {"object": uri}
+                        ]
+                    }, projection))
+                    
+                    # Process statements
+                    for i, stmt in enumerate(statements[:5]):  # Limit statements per node
+                        stmt_uri = URIRef(f"{uri}/statement/{i}")
+                        
+                        # Basic provenance
+                        g.add((stmt_uri, RDF.type, PROV.Entity))
+                        g.add((stmt_uri, PROV.wasDerivedFrom, node_uri))
+                        g.add((stmt_uri, SCHEMA.about, node_uri))
+                        
+                        # Video information directly in statement
+                        video_id = stmt.get("source_video")
+                        video_title = stmt.get("video_title")
+                        start_time = stmt.get("start_offset")
+                        end_time = stmt.get("end_offset")
+                        
+                        if video_id:
+                            # Create timestamped YouTube URL
+                            if start_time is not None:
+                                timestamped_url = f"https://www.youtube.com/watch?v={video_id}&t={int(start_time)}s"
+                            else:
+                                timestamped_url = f"https://www.youtube.com/watch?v={video_id}"
+                            
+                            g.add((stmt_uri, SCHEMA.url, Literal(timestamped_url)))
+                            
+                            # Video title directly on statement
+                            if video_title:
+                                g.add((stmt_uri, SCHEMA.videoTitle, Literal(video_title)))
+                        
+                        # Timestamps as plain integers
+                        if start_time is not None:
+                            g.add((stmt_uri, SCHEMA.startTime, Literal(int(start_time))))
+                        
+                        if end_time is not None:
+                            g.add((stmt_uri, SCHEMA.endTime, Literal(int(end_time))))
+                        
+                        # Transcript text if requested
+                        if include_transcript and "transcript_text" in stmt:
+                            transcript = stmt["transcript_text"]
+                            if transcript and len(transcript.strip()) > 0:
+                                # Truncate very long transcripts
+                                if len(transcript) > 1000:
+                                    transcript = transcript[:1000] + "..."
+                                g.add((stmt_uri, SCHEMA.text, Literal(transcript)))
+                        
+                except Exception as e:
+                    logger.warning(f"Skipping provenance for {uri}: {e}")
+            
+            header = f"# Provenance information generated {datetime.now(timezone.utc).isoformat()}Z\n"
+            header += f"# Nodes: {len(node_uris)}, Include transcript: {include_transcript}\n"
+            if include_transcript:
+                header += f"# Transcript text included (truncated at 1000 chars)\n"
+            header += "\n"
+            
+            return header + g.serialize(format="turtle")
+            
+        except Exception as e:
+            logger.error(f"❌ Provenance turtle generation failed: {e}")
             return f"# Error: {str(e)}\n"
 
     def close(self):
@@ -597,7 +754,7 @@ def get_querier() -> EnhancedGraphQuerier:
 
 # Create MCP server
 mcp = FastMCP(
-    "Enhanced Parliamentary Graph Query Server",
+    "Enhanced Parliamentary Graph Query Server - Clean Output",
     settings={
         "initialization_timeout": 60.0,
         "keep_alive_interval": 60.0,
@@ -609,10 +766,7 @@ mcp = FastMCP(
 # Add HTTP health check endpoint using FastMCP's custom_route
 @mcp.custom_route("/health", methods=["GET"])
 async def health_endpoint(request: Request) -> JSONResponse:
-    """
-    HTTP health check endpoint for Google Cloud Run and load balancers.
-    Returns 200 if database is responsive, 503 if not.
-    """
+    """HTTP health check endpoint for Google Cloud Run and load balancers."""
     try:
         # Get database connection
         q = get_querier()
@@ -641,7 +795,7 @@ async def health_endpoint(request: Request) -> JSONResponse:
                 "pagerank": node_count > 0,  # Assume PageRank available if nodes exist
                 "hybrid_search": node_count > 0  # Always available when nodes exist
             },
-            "version": "enhanced_v1.0"
+            "version": "clean_output_v1.0"
         }
         
         return JSONResponse(
@@ -673,15 +827,16 @@ def hybrid_search_turtle(query: str, hops: int = 1, limit: int = 5,
                         pagerank_weight: float = 0.3) -> str:
     """
     Hybrid search combining PageRank importance with semantic similarity.
+    Returns clean Turtle format without ranking information.
     
     Args:
         query: Free-text search string
         hops: Number of relationship hops (0-2, default 1)
-        limit: Number of seed nodes (1-10, default 5)
+        limit: Number of seed nodes (1-10, default 8)
         pagerank_weight: Weight of PageRank vs similarity (0-1, default 0.3)
     
     Returns:
-        Turtle-formatted RDF data with nodes ranked by hybrid importance
+        Clean Turtle-formatted RDF data with deduplicated labels
     """
     start_time = datetime.now()
     try:
@@ -719,6 +874,7 @@ def authority_search_turtle(query: str, hops: int = 1, limit: int = 5,
                            max_rank: int = 1000) -> str:
     """
     Search for authoritative nodes (high PageRank) related to the query.
+    Returns clean Turtle format without ranking information.
     
     Args:
         query: Free-text search string
@@ -727,7 +883,7 @@ def authority_search_turtle(query: str, hops: int = 1, limit: int = 5,
         max_rank: Maximum PageRank rank to consider (default 1000)
     
     Returns:
-        Turtle-formatted RDF data focusing on authoritative/important nodes
+        Clean Turtle-formatted RDF data focusing on authoritative nodes
     """
     start_time = datetime.now()
     try:
@@ -764,6 +920,7 @@ def authority_search_turtle(query: str, hops: int = 1, limit: int = 5,
 def topic_search_turtle(query: str, hops: int = 1, limit: int = 5) -> str:
     """
     Search for nodes important within the specific topic domain of the query.
+    Returns clean Turtle format without ranking information.
     
     Args:
         query: Free-text search string defining the topic
@@ -771,7 +928,7 @@ def topic_search_turtle(query: str, hops: int = 1, limit: int = 5) -> str:
         limit: Number of seed nodes (1-10, default 5)
     
     Returns:
-        Turtle-formatted RDF data with topic-specific importance rankings
+        Clean Turtle-formatted RDF data with topic-specific importance rankings
     """
     start_time = datetime.now()
     try:
@@ -807,6 +964,7 @@ def topic_search_turtle(query: str, hops: int = 1, limit: int = 5) -> str:
 def search_graph_turtle(query: str, hops: int = 1, limit: int = 3) -> str:
     """
     Standard search (backward compatibility) - now uses hybrid search by default.
+    Returns clean Turtle format without ranking information.
     
     Args:
         query: Free-text search string
@@ -814,173 +972,47 @@ def search_graph_turtle(query: str, hops: int = 1, limit: int = 3) -> str:
         limit: Number of seed nodes (1-10, default 3)
     
     Returns:
-        Turtle-formatted RDF data
+        Clean Turtle-formatted RDF data
     """
     # Use hybrid search as the new default with balanced weights
     return hybrid_search_turtle(query, hops, limit, pagerank_weight=0.4)
 
 @mcp.tool()
-def get_provenance(node_uris: str, include_transcript: bool = False) -> str:
+def get_provenance_turtle(node_uris: str, include_transcript: bool = True) -> str:
     """
-    Get detailed provenance information for specific nodes.
+    Get provenance information for specific nodes in clean Turtle format.
     
     Args:
         node_uris: Comma-separated list of node URIs to get provenance for
-        include_transcript: Whether to include full transcript text (default False)
+        include_transcript: Whether to include transcript text (default True)
     
     Returns:
-        JSON with detailed source information, video segments, and timestamps
+        Turtle-formatted provenance with video title, video ID, start time, and transcript
     """
     try:
         if not node_uris or not isinstance(node_uris, str):
-            return json.dumps({"error": "node_uris parameter required"}, indent=2)
+            return "# Error: node_uris parameter required\n"
         
         # Parse URIs
         uris = [uri.strip() for uri in node_uris.split(",") if uri.strip()]
         if not uris:
-            return json.dumps({"error": "No valid URIs provided"}, indent=2)
+            return "# Error: No valid URIs provided\n"
         
         # Limit to prevent token explosion
         if len(uris) > 10:
             uris = uris[:10]
         
-        logger.info(f"📚 Getting provenance for {len(uris)} nodes")
+        logger.info(f"📚 Getting provenance for {len(uris)} nodes as Turtle (transcript: {include_transcript})")
         
         q = get_querier()
-        provenance_data = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "node_count": len(uris),
-            "include_transcript": include_transcript,
-            "provenance": {}
-        }
+        result = q.provenance_to_turtle(uris, include_transcript)
         
-        for uri in uris:
-            try:
-                # Get node information
-                node = q.nodes.find_one({"uri": uri}, {"embedding": 0})
-                if not node:
-                    provenance_data["provenance"][uri] = {"error": "Node not found"}
-                    continue
-                
-                # Get related statements with provenance
-                if include_transcript:
-                    # Include all fields when transcript is requested
-                    statements = list(q.statements.find({
-                        "$or": [
-                            {"subject": uri},
-                            {"predicate": uri}, 
-                            {"object": uri}
-                        ]
-                    }))
-                else:
-                    # Include specific fields but exclude transcript
-                    statements = list(q.statements.find({
-                        "$or": [
-                            {"subject": uri},
-                            {"predicate": uri}, 
-                            {"object": uri}
-                        ]
-                    }, {
-                        "statement_id": 1,
-                        "subject": 1,
-                        "predicate": 1,
-                        "object": 1,
-                        "source_video": 1,
-                        "video_title": 1,
-                        "from_video": 1,
-                        "start_offset": 1,
-                        "end_offset": 1,
-                        "segment_type": 1,
-                        "_id": 1
-                    }))
-                
-                # Build compact provenance info
-                node_provenance = {
-                    "uri": uri,
-                    "label": node.get("label", "Unknown"),
-                    "type": node.get("type", []),
-                    "source_videos": list(set(node.get("source_video", []))),
-                    "video_title": node.get("video_title", "Unknown"),
-                    "pagerank_rank": node.get("pagerank_rank"),
-                    "statement_count": len(statements),
-                    "video_segments": []
-                }
-                
-                # Group statements by video segment for efficiency
-                segments = {}
-                for stmt in statements:
-                    video_id = stmt.get("source_video", "unknown")
-                    start_time = stmt.get("start_offset", 0)
-                    end_time = stmt.get("end_offset", 0)
-                    
-                    # Create segment key (rounded to nearest 30 seconds for grouping)
-                    segment_key = f"{video_id}_{int(start_time // 30) * 30}"
-                    
-                    if segment_key not in segments:
-                        segments[segment_key] = {
-                            "video_id": video_id,
-                            "video_title": stmt.get("video_title", "Unknown"),
-                            "start_time": start_time,
-                            "end_time": end_time,
-                            "statement_count": 0,
-                            "roles": set()
-                        }
-                        
-                        if include_transcript:
-                            segments[segment_key]["transcript_preview"] = stmt.get("transcript_text", "")[:200]
-                    
-                    segments[segment_key]["statement_count"] += 1
-                    segments[segment_key]["end_time"] = max(segments[segment_key]["end_time"], end_time)
-                    
-                    # Track roles if this is about a person
-                    if "Person" in str(node.get("type", [])):
-                        role_info = stmt.get("transcript_text", "")
-                        if any(word in role_info.lower() for word in ["minister", "member", "mp", "speaker"]):
-                            segments[segment_key]["roles"].add("parliamentary_member")
-                
-                # Convert to list and clean up
-                for segment in segments.values():
-                    segment["roles"] = list(segment["roles"])
-                    segment["duration"] = round(segment["end_time"] - segment["start_time"], 1)
-                    
-                    # Format timestamps as MM:SS
-                    def format_time(seconds):
-                        mins = int(seconds // 60)
-                        secs = int(seconds % 60)
-                        return f"{mins}:{secs:02d}"
-                    
-                    segment["time_range"] = f"{format_time(segment['start_time'])}-{format_time(segment['end_time'])}"
-                    
-                    node_provenance["video_segments"].append(segment)
-                
-                # Sort segments by video and time
-                node_provenance["video_segments"].sort(key=lambda x: (x["video_id"], x["start_time"]))
-                
-                # Add summary stats
-                total_duration = sum(seg["duration"] for seg in node_provenance["video_segments"])
-                unique_videos = len(set(seg["video_id"] for seg in node_provenance["video_segments"]))
-                
-                node_provenance["summary"] = {
-                    "total_video_time": f"{int(total_duration // 60)}:{int(total_duration % 60):02d}",
-                    "unique_videos": unique_videos,
-                    "total_segments": len(node_provenance["video_segments"])
-                }
-                
-                provenance_data["provenance"][uri] = node_provenance
-                
-            except Exception as e:
-                logger.error(f"❌ Failed to get provenance for {uri}: {e}")
-                provenance_data["provenance"][uri] = {"error": str(e)}
-        
-        logger.info(f"✅ Provenance retrieved for {len(provenance_data['provenance'])} nodes")
-        return json.dumps(provenance_data, indent=2)
+        logger.info(f"✅ Provenance turtle generated for {len(uris)} nodes")
+        return result
         
     except Exception as e:
-        logger.error(f"❌ Provenance retrieval failed: {e}")
-        return json.dumps({
-            "error": str(e),
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }, indent=2)
+        logger.error(f"❌ Provenance turtle generation failed: {e}")
+        return f"# Error: Provenance generation failed - {str(e)}\n"
 
 @mcp.tool()
 def health_check() -> str:
@@ -1012,7 +1044,7 @@ def health_check() -> str:
                 "pagerank": node_count > 0,
                 "hybrid_search": node_count > 0
             },
-            "version": "enhanced_v1.0"
+            "version": "clean_output_v1.0"
         }
         
         logger.info("✅ Health check passed")
@@ -1066,8 +1098,8 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     host = "0.0.0.0"
     
-    logger.info("🚀 Starting Enhanced Parliamentary Graph MCP Server")
-    logger.info("🎯 Features: Hybrid Search, Authority Ranking, Topic-Specific PageRank")
+    logger.info("🚀 Starting Enhanced Parliamentary Graph MCP Server - Clean Output")
+    logger.info("✨ Features: Deduplicated labels, No ranking info, Turtle provenance")
     logger.info(f"📡 Server will run on {host}:{port}")
     logger.info(f"🏥 Health check available at http://{host}:{port}/health")
     
