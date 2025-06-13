@@ -73,18 +73,7 @@ class SessionGraphState:
     
     def __init__(self, session_id: str):
         self.session_id = session_id
-        self.graph = Graph()
-        self.node_count = 0
-        self.edge_count = 0
-        self.last_topics = set()
-        self.created_at = datetime.now(timezone.utc)
-        
-        # Bind namespaces
-        self.graph.bind("bbp", BBP)
-        self.graph.bind("schema", SCHEMA)
-        self.graph.bind("prov", PROV)
-        self.graph.bind("rdfs", RDFS)
-        self.graph.bind("rdf", RDF)
+        self.clear_graph("New session started")
         
     def add_turtle_data(self, turtle_str: str) -> bool:
         """Add Turtle data to the cumulative graph."""
@@ -111,17 +100,6 @@ class SessionGraphState:
             logger.error(f"Failed to parse Turtle: {e}")
             return False
     
-    def extract_current_topics(self) -> Set[str]:
-        """Extract main topics from the current graph."""
-        topics = set()
-        
-        # Get entities with labels
-        for subj, pred, obj in self.graph.triples((None, RDFS.label, None)):
-            if isinstance(obj, Literal):
-                topics.add(str(obj).lower())
-                
-        return topics
-    
     def get_turtle_dump(self) -> str:
         """Get current graph as Turtle format."""
         try:
@@ -129,8 +107,6 @@ class SessionGraphState:
 # Session: {self.session_id}
 # Created: {self.created_at.isoformat()}
 # Nodes: {self.node_count}, Edges: {self.edge_count}
-# Last Updated: {datetime.now(timezone.utc).isoformat()}
-
 """
             return header + self.graph.serialize(format='turtle')
         except Exception as e:
@@ -139,8 +115,8 @@ class SessionGraphState:
     
     def clear_graph(self, reason: str = "Topic change"):
         """Clear the cumulative graph."""
-        old_edge_count = self.edge_count
         self.graph = Graph()
+        self.created_at = datetime.now(timezone.utc)
         
         # Re-bind namespaces
         self.graph.bind("bbp", BBP)
@@ -151,9 +127,8 @@ class SessionGraphState:
         
         self.node_count = 0
         self.edge_count = 0
-        self.last_topics.clear()
         
-        logger.info(f"🧹 Session {self.session_id[:8]}: Cleared {old_edge_count} triples. Reason: {reason}")
+        logger.info(f"🧹 Session {self.session_id[:8]}: Graph cleared. Reason: {reason}")
     
     def get_stats(self) -> Dict[str, Any]:
         """Get graph statistics."""
@@ -161,7 +136,6 @@ class SessionGraphState:
             "session_id": self.session_id,
             "node_count": self.node_count,
             "edge_count": self.edge_count,
-            "topic_count": len(self.last_topics),
             "created_at": self.created_at.isoformat(),
             "size_mb": len(self.get_turtle_dump()) / (1024 * 1024)
         }
@@ -231,70 +205,278 @@ class ParliamentaryGraphQuerier:
             logger.error(f"❌ Failed to load embedding model: {e}")
             raise RuntimeError(f"Vector search failed to initialize: {e}")
 
-    def hybrid_search(self, query: str, limit: int = 8, pagerank_weight: float = 0.3) -> List[Dict]:
-        """Hybrid search combining PageRank importance with semantic similarity."""
+    def unified_hybrid_search(self, query: str, limit: int = 8) -> List[Dict]:
+        """
+        Performs both node vector search and statement text search,
+        then intelligently combines and weights the results.
+        """
         try:
-            logger.info(f"🎯 Hybrid search for: '{query}'")
+            logger.info(f"🔍 Unified search for: '{query}'")
             
-            # Generate query embedding
-            query_embedding = self.embedding_model.encode(query).tolist()
+            # Run both searches in parallel
+            node_results = self._search_nodes_vector(query, limit * 2)
+            statement_results = self._search_statements_atlas(query, limit * 2)
+
+            # Convert both result types to unified format
+            unified_results = []
             
-            # MongoDB vector search pipeline
-            pipeline = [
-                {
-                    "$vectorSearch": {
-                        "index": "vector_index",
-                        "path": "embedding",
-                        "queryVector": query_embedding,
-                        "numCandidates": limit * 5,
-                        "limit": limit * 3
-                    }
-                },
-                {
-                    "$addFields": {
-                        "similarity_score": {"$meta": "vectorSearchScore"},
-                        "normalized_pagerank": {
-                            "$divide": [
-                                {"$ifNull": ["$pagerank_score", 0.00001]},
-                                0.01
-                            ]
-                        }
-                    }
-                },
-                {
-                    "$addFields": {
-                        "hybrid_score": {
-                            "$add": [
-                                {"$multiply": [pagerank_weight, "$normalized_pagerank"]},
-                                {"$multiply": [(1 - pagerank_weight), "$similarity_score"]}
-                            ]
-                        }
-                    }
-                },
-                {
-                    "$sort": {"hybrid_score": -1}
-                },
-                {
-                    "$limit": limit
-                },
-                {
-                    "$project": {
-                        "uri": 1,
-                        "label": 1,
-                        "name": 1,
-                        "type": 1,
-                        "searchable_text": 1
-                    }
-                }
-            ]
+            # Process node results
+            for node in node_results:
+                unified_results.append({
+                    'uri': node['uri'],
+                    'source_type': 'node',
+                    'content': node.get('searchable_text', ''),
+                    'label': node.get('label') or node.get('name', ''),
+                    'node_data': node,
+                    'vector_score': node.get('similarity_score', 0),
+                    'text_score': 0,
+                    'provenance': None
+                })
             
-            results = list(self.nodes.aggregate(pipeline))
-            logger.info(f"🎯 Hybrid search found {len(results)} results")
-            return results
+            # Process statement results and find their related nodes
+            for stmt in statement_results:
+                # Get the nodes referenced in this statement
+                related_uris = []
+                if stmt.get('subject'): related_uris.append(stmt['subject'])
+                if stmt.get('object'): related_uris.append(stmt['object'])
+                
+                # Fetch the actual node data
+                for uri in related_uris:
+                    node = self.nodes.find_one({'uri': uri})
+                    if node:
+                        unified_results.append({
+                            'uri': uri,
+                            'source_type': 'statement',
+                            'content': stmt.get('transcript_text', ''),
+                            'label': node.get('label') or node.get('name', ''),
+                            'node_data': node,
+                            'vector_score': 0,
+                            'text_score': stmt.get('score', 0),
+                            'provenance': {
+                                'video_id': stmt.get('source_video'),
+                                'video_title': stmt.get('video_title'),
+                                'start_time': stmt.get('start_offset'),
+                                'transcript_excerpt': stmt.get('transcript_text', '')[:200] + '...'
+                            }
+                        })
+            
+            # Deduplicate by URI while preserving best scores
+            uri_to_result = {}
+            for result in unified_results:
+                uri = result['uri']
+                if uri not in uri_to_result:
+                    uri_to_result[uri] = result
+                else:
+                    # Merge scores - keep highest of each type
+                    existing = uri_to_result[uri]
+                    existing['vector_score'] = max(existing['vector_score'], result['vector_score'])
+                    existing['text_score'] = max(existing['text_score'], result['text_score'])
+                    
+                    # Prefer statement provenance if available
+                    if result['provenance'] and not existing['provenance']:
+                        existing['provenance'] = result['provenance']
+                        existing['content'] = result['content']  # Use transcript text
+            
+            # Calculate unified scores and rank
+            final_results = list(uri_to_result.values())
+            final_results = self._calculate_unified_scores(final_results, query)
+            
+            # Sort by unified score and return top results
+            final_results.sort(key=lambda x: x['unified_score'], reverse=True)
+            
+            logger.info(f"🎯 Unified search: {len(final_results)} unique results")
+            return final_results[:limit]
             
         except Exception as e:
-            logger.error(f"❌ Hybrid search failed: {e}")
+            logger.error(f"❌ Unified search failed: {e}")
             return []
+
+    def _search_nodes_vector(self, query: str, limit: int) -> List[Dict]:
+        """Vector search on nodes (existing logic)"""
+        query_embedding = self.embedding_model.encode(query).tolist()
+        
+        pipeline = [
+            {"$vectorSearch": {
+                "index": "vector_index",
+                "path": "embedding", 
+                "queryVector": query_embedding,
+                "numCandidates": limit * 3,
+                "limit": limit
+            }},
+            {"$addFields": {
+                "similarity_score": {"$meta": "vectorSearchScore"}
+            }}
+        ]
+        
+        return list(self.nodes.aggregate(pipeline))
+
+    def _search_statements_atlas(self, query: str, limit: int) -> List[Dict]:
+        """Atlas Search on statements - much better than $text"""
+        pipeline = [
+            {
+                "$search": {
+                    "index": "default",
+                    "compound": {
+                        "should": [
+                            {
+                                "phrase": {
+                                    "query": query,
+                                    "path": "transcript_text",
+                                    "score": {"boost": {"value": 3}}
+                                }
+                            },
+                            {
+                                "text": {
+                                    "query": query,
+                                    "path": ["transcript_text", "video_title"],
+                                    "fuzzy": {"maxEdits": 1}
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "$addFields": {
+                    "search_score": {"$meta": "searchScore"}
+                }
+            },
+            {
+                "$project": {
+                    "subject": 1, "object": 1, "transcript_text": 1,
+                    "source_video": 1, "video_title": 1, "start_offset": 1,
+                    "search_score": 1
+                }
+            },
+            {"$sort": {"search_score": -1}},
+            {"$limit": limit}
+        ]
+        
+        return list(self.statements.aggregate(pipeline))
+
+    def _calculate_unified_scores(self, results: List[Dict], query: str) -> List[Dict]:
+        """
+        Calculate unified scores using multiple factors:
+        - Vector similarity score
+        - Text relevance score  
+        - Query characteristics
+        - PageRank importance
+        - Provenance quality
+        """
+        
+        # Normalize scores to 0-1 range
+        max_vector = max((r['vector_score'] for r in results), default=1)
+        max_text = max((r['text_score'] for r in results), default=1)
+        
+        for result in results:
+            # Normalize individual scores
+            norm_vector = result['vector_score'] / max_vector if max_vector > 0 else 0
+            norm_text = result['text_score'] / max_text if max_text > 0 else 0
+            
+            # Dynamic weighting based on query characteristics
+            weights = self._get_dynamic_weights(query, result)
+            
+            # Base score combination
+            base_score = (
+                weights['vector_weight'] * norm_vector + 
+                weights['text_weight'] * norm_text
+            )
+            
+            # Boost factors
+            pagerank_boost = self._get_pagerank_boost(result['node_data'])
+            provenance_boost = self._get_provenance_boost(result['provenance'])
+            content_quality_boost = self._get_content_quality_boost(result['content'])
+            
+            # Final unified score
+            result['unified_score'] = base_score * (1 + pagerank_boost + provenance_boost + content_quality_boost)
+            
+            # Store components for debugging
+            result['score_components'] = {
+                'base_score': base_score,
+                'norm_vector': norm_vector,
+                'norm_text': norm_text,
+                'weights': weights,
+                'pagerank_boost': pagerank_boost,
+                'provenance_boost': provenance_boost,
+                'content_quality_boost': content_quality_boost
+            }
+        
+        return results
+
+    def _get_dynamic_weights(self, query: str, result: Dict) -> Dict:
+        """
+        Dynamically adjust vector vs text weights based on query and result characteristics
+        """
+        # Default weights
+        vector_weight = 0.6
+        text_weight = 0.4
+        
+        # Adjust based on query characteristics
+        query_lower = query.lower()
+        
+        # Favor text search for:
+        if any(indicator in query_lower for indicator in [
+            'said', 'stated', 'mentioned', 'quote', 'exactly',
+            '$', 'bbd', 'usd', 'payment', 'amount', 'cost',
+            'bill', 'section', 'act', 'regulation'
+        ]):
+            text_weight += 0.3
+            vector_weight -= 0.3
+        
+        # Favor vector search for:
+        if any(indicator in query_lower for indicator in [
+            'about', 'regarding', 'related to', 'concerning',
+            'policy', 'strategy', 'approach', 'similar'
+        ]):
+            vector_weight += 0.2
+            text_weight -= 0.2
+        
+        # Boost text weight if we have good provenance
+        if result.get('provenance'):
+            text_weight += 0.1
+            vector_weight -= 0.1
+        
+        # Normalize to ensure they sum to 1
+        total = vector_weight + text_weight
+        return {
+            'vector_weight': vector_weight / total,
+            'text_weight': text_weight / total
+        }
+
+    def _get_pagerank_boost(self, node_data: Dict) -> float:
+        pagerank_rank = node_data.get('pagerank_rank', 1000)
+        # Convert rank to boost: top 10 nodes get big boost
+        if pagerank_rank <= 10:
+            return 0.5  # 50% boost for top 10
+        elif pagerank_rank <= 50:
+            return 0.3  # 30% boost for top 50
+        elif pagerank_rank <= 100:
+            return 0.1  # 10% boost for top 100
+        else:
+            return 0.0
+
+    def _get_provenance_boost(self, provenance: Dict) -> float:
+        """Boost if we have good provenance (video links, timestamps)"""
+        if not provenance:
+            return 0
+        
+        boost = 0
+        if provenance.get('video_id'): boost += 0.1
+        if provenance.get('start_time'): boost += 0.1
+        if provenance.get('transcript_excerpt'): boost += 0.1
+        
+        return min(0.3, boost)
+
+    def _get_content_quality_boost(self, content: str) -> float:
+        """Boost based on content richness"""
+        if not content:
+            return 0
+        
+        # Simple content quality indicators
+        word_count = len(content.split())
+        boost = min(0.1, word_count / 1000)  # Up to 0.1 boost for rich content
+        
+        return boost
 
     def get_connected_nodes(self, uris: Set[str], hops: int = 1) -> Set[str]:
         """Get nodes connected to the given URIs."""
@@ -564,7 +746,7 @@ class ParliamentarySystem:
                 logger.info(f"🔍 Searching parliament: {query}")
                 
                 # Perform hybrid search
-                seeds = self.querier.hybrid_search(query, limit)
+                seeds = self.querier.unified_hybrid_search(query, limit)
                 if not seeds:
                     return f"# No parliamentary data found for: {query}\n"
                 
@@ -592,7 +774,6 @@ class ParliamentarySystem:
                         
                         if main_data and not main_data.startswith("# Error"):
                             session_graph.add_turtle_data(main_data)
-                            session_graph.last_topics.update(session_graph.extract_current_topics())
                             logger.info(f"📈 Updated session graph: {session_graph.get_stats()}")
                     except Exception as e:
                         logger.warning(f"Failed to update session graph: {e}")
@@ -985,16 +1166,12 @@ Remember: Your session graph memory allows you to build increasingly sophisticat
             
             # Add session graph context
             if session_graph.edge_count > 0:
+                # Include the current graph for context
                 graph_stats = session_graph.get_stats()
                 context += f"\n\nSESSION GRAPH CONTEXT:\n"
-                context += f"Current session has {graph_stats['edge_count']} relationships across {graph_stats['node_count']} entities.\n"
-                context += f"Previous topics: {', '.join(list(session_graph.last_topics)[:5])}\n"
-                
-                # Include a sample of the current graph for context
-                turtle_sample = session_graph.get_turtle_dump()
-                if len(turtle_sample) > 2000:
-                    turtle_sample = turtle_sample[:2000] + "\n# ... (truncated)\n"
-                context += f"Current graph sample:\n{turtle_sample}\n"
+                context += f"Current session has {graph_stats['edge_count']} relationships across {graph_stats['node_count']} entities.\n\n"
+                context += session_graph.get_turtle_dump()
+                context += "\n\n"
             
             # Create message with enhanced context
             full_query = f"{context}CURRENT QUESTION: {query}"
