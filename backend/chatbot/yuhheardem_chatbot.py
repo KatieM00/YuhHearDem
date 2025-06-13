@@ -214,8 +214,16 @@ class ParliamentaryGraphQuerier:
             logger.info(f"🔍 Unified search for: '{query}'")
             
             # Run both searches in parallel
-            node_results = self._search_nodes_vector(query, limit * 2)
-            statement_results = self._search_statements_atlas(query, limit * 2)
+            try:
+                node_results = self._search_nodes_vector(query, limit * 2)
+            except Exception as e:
+                logger.error(f"❌ Vector search failed: {e}")
+                node_results = []
+            try:
+                statement_results = self._search_statements_atlas(query, limit * 2)
+            except Exception as e:
+                logger.error(f"❌ Atlas search failed: {e}")
+                statement_results = [] 
 
             # Convert both result types to unified format
             unified_results = []
@@ -234,31 +242,49 @@ class ParliamentaryGraphQuerier:
                 })
             
             # Process statement results and find their related nodes
-            for stmt in statement_results:
-                # Get the nodes referenced in this statement
-                related_uris = []
-                if stmt.get('subject'): related_uris.append(stmt['subject'])
-                if stmt.get('object'): related_uris.append(stmt['object'])
+            if statement_results:
+                # Step 1: Collect all unique URIs from all statements
+                all_related_uris = set()
+                stmt_to_uris = {}  # Track which URIs belong to which statement
                 
-                # Fetch the actual node data
-                for uri in related_uris:
-                    node = self.nodes.find_one({'uri': uri})
-                    if node:
-                        unified_results.append({
-                            'uri': uri,
-                            'source_type': 'statement',
-                            'content': stmt.get('transcript_text', ''),
-                            'label': node.get('label') or node.get('name', ''),
-                            'node_data': node,
-                            'vector_score': 0,
-                            'text_score': stmt.get('score', 0),
-                            'provenance': {
-                                'video_id': stmt.get('source_video'),
-                                'video_title': stmt.get('video_title'),
-                                'start_time': stmt.get('start_offset'),
-                                'transcript_excerpt': stmt.get('transcript_text', '')[:200] + '...'
-                            }
-                        })
+                for i, stmt in enumerate(statement_results):
+                    related_uris = []
+                    if stmt.get('subject'): related_uris.append(stmt['subject'])
+                    if stmt.get('object'): related_uris.append(stmt['object'])
+                    
+                    stmt_to_uris[i] = related_uris
+                    all_related_uris.update(related_uris)
+                
+                # Step 2: Fetch ALL related nodes in ONE database call
+                if all_related_uris:
+                    nodes_cursor = self.nodes.find(
+                        {'uri': {'$in': list(all_related_uris)}},
+                        {'uri': 1, 'label': 1, 'name': 1}  # Only fetch needed fields
+                    )
+                    
+                    # Create a lookup dictionary for O(1) access
+                    uri_to_node = {node['uri']: node for node in nodes_cursor}
+                    
+                    # Step 3: Build results using the lookup dictionary
+                    for i, stmt in enumerate(statement_results):
+                        for uri in stmt_to_uris[i]:
+                            node = uri_to_node.get(uri)
+                            if node:
+                                unified_results.append({
+                                    'uri': uri,
+                                    'source_type': 'statement',
+                                    'content': stmt.get('transcript_text', ''),
+                                    'label': node.get('label') or node.get('name', ''),
+                                    'node_data': node,
+                                    'vector_score': 0,
+                                    'text_score': stmt.get('score', 0),
+                                    'provenance': {
+                                        'video_id': stmt.get('source_video'),
+                                        'video_title': stmt.get('video_title'),
+                                        'start_time': stmt.get('start_offset'),
+                                        'transcript_excerpt': stmt.get('transcript_text', '')[:200] + '...'
+                                    }
+                                })
             
             # Deduplicate by URI while preserving best scores
             uri_to_result = {}
@@ -1167,9 +1193,6 @@ Remember: Your session graph memory allows you to build increasingly sophisticat
             # Add session graph context
             if session_graph.edge_count > 0:
                 # Include the current graph for context
-                graph_stats = session_graph.get_stats()
-                context += f"\n\nSESSION GRAPH CONTEXT:\n"
-                context += f"Current session has {graph_stats['edge_count']} relationships across {graph_stats['node_count']} entities.\n\n"
                 context += session_graph.get_turtle_dump()
                 context += "\n\n"
             
