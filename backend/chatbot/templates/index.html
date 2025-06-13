@@ -225,6 +225,155 @@
             padding: 0;
         }
 
+        /* RESPONSE CARD STYLES */
+        .response-cards {
+            margin: 1rem 0;
+        }
+
+        .response-card {
+            border: 1px solid #e5e7eb;
+            border-radius: 0.75rem;
+            margin-bottom: 1rem;
+            background: white;
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        .response-card:hover {
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .card-header {
+            padding: 1rem;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-radius: 0.75rem;
+            transition: background-color 0.2s ease;
+        }
+
+        .card-header:hover {
+            background-color: #f9fafb;
+        }
+
+        .card-summary {
+            flex: 1;
+            font-weight: 600;
+            color: #374151;
+            line-height: 1.5;
+            margin-right: 1rem;
+        }
+
+        .card-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 2rem;
+            height: 2rem;
+            border-radius: 50%;
+            background-color: #f3f4f6;
+            transition: all 0.2s ease;
+        }
+
+        .card-header:hover .card-toggle {
+            background-color: #e5e7eb;
+        }
+
+        .toggle-icon {
+            font-size: 0.875rem;
+            color: #6b7280;
+            transition: transform 0.3s ease;
+            font-weight: bold;
+        }
+
+        .response-card.expanded .toggle-icon {
+            transform: rotate(180deg);
+        }
+
+        .card-details {
+            border-top: 1px solid #e5e7eb;
+            transition: all 0.3s ease;
+            overflow: hidden;
+        }
+
+        .card-details.collapsed {
+            max-height: 0;
+            border-top: none;
+        }
+
+        .card-details.expanded {
+            max-height: none;
+        }
+
+        .card-content {
+            padding: 1.5rem;
+            background-color: #fafbfc;
+        }
+
+        /* Intro message styling */
+        .intro-message {
+            margin-bottom: 1.5rem;
+            padding: 1rem;
+            background-color: rgba(59, 130, 246, 0.05);
+            border-radius: 0.5rem;
+            border-left: 4px solid #3b82f6;
+        }
+
+        /* Follow-up suggestions styling */
+        .follow-up-suggestions {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            background-color: #f8fafc;
+            border-radius: 0.5rem;
+            border: 1px solid #e2e8f0;
+        }
+
+        .follow-up-suggestions h4 {
+            margin: 0 0 0.75rem 0;
+            font-weight: 600;
+            color: #374151;
+            font-size: 0.95rem;
+        }
+
+        .suggestions-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .suggestion-item {
+            padding: 0.5rem 0.75rem;
+            margin-bottom: 0.5rem;
+            background-color: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.375rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 0.9rem;
+            color: #4b5563;
+        }
+
+        .suggestion-item:hover {
+            background-color: #f0f9ff;
+            border-color: #3b82f6;
+            color: #1e40af;
+            transform: translateY(-1px);
+        }
+
+        .suggestion-item:last-child {
+            margin-bottom: 0;
+        }
+
+        /* Error fallback styling */
+        .error-fallback {
+            padding: 1rem;
+            background-color: #fef2f2;
+            border: 1px solid #fecaca;
+            border-radius: 0.5rem;
+            color: #dc2626;
+        }
+
         /* Connection status */
         .connection-status-connected {
             background-color: #10b981;
@@ -253,11 +402,29 @@
             .thinking-dots-container {
                 margin-left: 36px;
             }
+
+            .card-header {
+                padding: 0.75rem;
+            }
+
+            .card-content {
+                padding: 1rem;
+            }
+
+            .card-summary {
+                font-size: 0.9rem;
+                margin-right: 0.5rem;
+            }
         }
 
         @media (max-width: 640px) {
             .thinking-dots-container {
                 margin-left: 0;
+            }
+
+            .response-card {
+                margin-left: -0.5rem;
+                margin-right: -0.5rem;
             }
         }
     </style>
@@ -291,7 +458,7 @@
                             <div class="bg-blue-50 rounded-lg p-4">
                                 <p class="text-gray-800">Hello! I'm YuhHearDem, your AI assistant for researching Barbados Parliament discussions. Ask me about parliamentary debates, minister statements, bills, or any topic discussed in Parliament.</p>
                                 <p class="text-gray-600 text-sm mt-2"><strong>Examples:</strong> "What did the Minister of Health say about COVID-19?" or "Recent discussions about water management"</p>
-                                <p class="text-gray-600 text-sm mt-2"><strong>YouTube:</strong> When I share YouTube links with timestamps, click them to watch the video in the side panel!</p>
+                                <p class="text-gray-600 text-sm mt-2"><strong>New Feature:</strong> My responses now come in expandable cards - click to explore details!</p>
                             </div>
                         </div>
                     </div>
@@ -314,13 +481,47 @@
     </div>
 
     <script>
-        // Clean YuhHearDem Chat Application - No Old Code
+        // YuhHearDem Chat Application with Expandable Cards Support
         function generateUUID() {
             return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
                 var r = Math.random() * 16 | 0;
                 var v = c == 'x' ? r : (r & 0x3 | 0x8);
                 return v.toString(16);
             });
+        }
+
+        // Global function to toggle cards
+        function toggleCard(cardId) {
+            var card = document.querySelector('[data-card-id="' + cardId + '"]');
+            var details = document.getElementById(cardId + '-details');
+            
+            if (!card || !details) {
+                console.error('Card elements not found:', cardId);
+                return;
+            }
+            
+            if (details.classList.contains('collapsed')) {
+                // Expand
+                details.classList.remove('collapsed');
+                details.classList.add('expanded');
+                card.classList.add('expanded');
+                console.log('📂 Expanded card:', cardId);
+            } else {
+                // Collapse
+                details.classList.remove('expanded');
+                details.classList.add('collapsed');
+                card.classList.remove('expanded');
+                console.log('📁 Collapsed card:', cardId);
+            }
+        }
+
+        // Global function to send suggestion
+        function sendSuggestion(suggestion) {
+            console.log('💡 Sending suggestion:', suggestion);
+            if (chatApp && chatApp.elements && chatApp.elements.queryInput) {
+                chatApp.elements.queryInput.value = suggestion;
+                chatApp.sendQuery();
+            }
         }
 
         var chatApp = {
@@ -330,6 +531,7 @@
             sessionId: null,
             isProcessing: false,
             currentThinkingDots: null,
+            messageCounter: 0, // Add counter for unique message IDs
             
             // DOM elements
             elements: {
@@ -342,7 +544,7 @@
             },
             
             init: function() {
-                console.log('🔧 Initializing clean YuhHearDem chat...');
+                console.log('🔧 Initializing YuhHearDem chat with expandable cards...');
                 
                 this.initializeSession();
                 this.cacheElements();
@@ -405,6 +607,7 @@
             },
             
             testConnection: function() {
+                var self = this;
                 fetch(this.apiBase + '/health')
                     .then(function(response) {
                         if (!response.ok) {
@@ -414,17 +617,17 @@
                     })
                     .then(function(health) {
                         if (health.status === 'healthy') {
-                            chatApp.setConnectionStatus(true);
-                            chatApp.enableInput();
-                            chatApp.elements.inputStatus.textContent = 'Ready! Ask me about parliamentary discussions.';
+                            self.setConnectionStatus(true);
+                            self.enableInput();
+                            self.elements.inputStatus.textContent = 'Ready! Ask me about parliamentary discussions.';
                         } else {
                             throw new Error('Service not healthy: ' + health.status);
                         }
                     })
                     .catch(function(error) {
                         console.error('❌ Connection failed:', error);
-                        chatApp.setConnectionStatus(false);
-                        chatApp.elements.inputStatus.textContent = 'Connection failed: ' + error.message;
+                        self.setConnectionStatus(false);
+                        self.elements.inputStatus.textContent = 'Connection failed: ' + error.message;
                     });
             },
             
@@ -571,11 +774,19 @@
                                         var eventData = JSON.parse(line.substring(6));
                                         console.log('📨 Event:', eventData.type);
                                         
-                                        // ONLY handle final response - ignore everything else
+                                        // Handle final response
                                         if (eventData.type === 'response_ready' && eventData.data && eventData.data.response) {
-                                            console.log('✅ Got final response');
+                                            console.log('✅ Got final response, type:', eventData.data.response_type);
                                             self.hideThinkingDots();
-                                            self.addMessage('assistant', eventData.data.response);
+                                            
+                                            // Check if we have structured response
+                                            if (eventData.data.structured_response) {
+                                                console.log('📋 Processing structured response with cards');
+                                                self.addStructuredMessage(eventData.data.structured_response, eventData.data.response);
+                                            } else {
+                                                console.log('📄 Processing fallback response');
+                                                self.addMessage('assistant', eventData.data.response);
+                                            }
                                             
                                         } else if (eventData.type === 'error') {
                                             console.log('❌ Got error');
@@ -604,6 +815,46 @@
                     self.isProcessing = false;
                     self.enableInput();
                 });
+            },
+            
+            addStructuredMessage: function(structuredResponse, htmlContent) {
+                console.log('💬 Adding structured message with cards');
+                
+                // Generate unique message ID
+                this.messageCounter++;
+                var messageId = 'msg-' + this.messageCounter;
+                
+                var messageDiv = document.createElement('div');
+                messageDiv.className = 'message-bubble';
+                messageDiv.setAttribute('data-message-id', messageId);
+                
+                var avatarBg = 'bg-blue-500';
+                var bubbleBg = 'bg-blue-50';
+                var avatarText = 'YH';
+                
+                messageDiv.innerHTML = 
+                    '<div class="flex items-start space-x-3">' +
+                        '<div class="w-8 h-8 rounded-full ' + avatarBg + ' flex items-center justify-center text-white text-sm font-semibold">' + avatarText + '</div>' +
+                        '<div class="flex-1">' +
+                            '<div class="' + bubbleBg + ' rounded-lg p-4">' +
+                                '<div class="text-gray-800">' + htmlContent + '</div>' +
+                                '<div class="text-xs text-gray-500 mt-2">' + new Date().toLocaleTimeString() + '</div>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>';
+                
+                this.elements.chatContainer.appendChild(messageDiv);
+                
+                // Make YouTube links open in new window
+                var youtubeLinks = messageDiv.querySelectorAll('a[href*="youtube.com"], a[href*="youtu.be"]');
+                for (var i = 0; i < youtubeLinks.length; i++) {
+                    youtubeLinks[i].target = '_blank';
+                    youtubeLinks[i].rel = 'noopener noreferrer';
+                }
+                
+                this.scrollToBottom();
+                
+                return messageDiv;
             },
             
             addMessage: function(sender, content) {
@@ -681,6 +932,9 @@
                     messages[i].remove();
                 }
                 
+                // Reset message counter
+                this.messageCounter = 0;
+                
                 this.userId = generateUUID();
                 this.sessionId = generateUUID();
                 
@@ -699,7 +953,10 @@
             chatApp.init();
         });
 
+        // Expose functions globally
         window.chatApp = chatApp;
+        window.toggleCard = toggleCard;
+        window.sendSuggestion = sendSuggestion;
     </script>
 </body>
 </html>

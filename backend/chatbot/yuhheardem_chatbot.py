@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Fixed Parliamentary Chatbot - Simple Session Management That Works
-==================================================================
+Enhanced Parliamentary Chatbot - JSON Response Processing with Repair
+====================================================================
 
-Goes back to working session management while maintaining enhanced features.
+Updated to handle JSON responses from LLM with automatic JSON repair.
 """
 
 import os
@@ -40,11 +40,13 @@ from rdflib.namespace import RDF, RDFS
 import markdown
 from bs4 import BeautifulSoup
 
+# JSON repair
+from json_repair import repair_json
+
 # Mount static files and templates
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import pytz
-
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -61,13 +63,24 @@ class QueryRequest(BaseModel):
     user_id: str = Field(..., description="Unique user identifier")
     session_id: Optional[str] = Field(None, description="Session ID")
 
+class ResponseCard(BaseModel):
+    summary: str = Field(..., description="One-sentence overview of the card's content")
+    details: str = Field(..., description="Full, detailed answer with markdown formatting")
+
+class StructuredResponse(BaseModel):
+    intro_message: str = Field(..., description="Introductory persona message")
+    response_cards: List[ResponseCard] = Field(..., description="Array of expandable cards")
+    follow_up_suggestions: List[str] = Field(..., description="Follow-up suggestions")
+
 class QueryResponse(BaseModel):
     session_id: str
     user_id: str
     message_id: str
     status: str
     message: Optional[str] = None
+    structured_response: Optional[StructuredResponse] = None
 
+# [Keep all the existing SessionGraphState, ParliamentaryGraphQuerier classes unchanged]
 class SessionGraphState:
     """Manages cumulative graph state for a session."""
     
@@ -140,6 +153,7 @@ class SessionGraphState:
             "size_mb": len(self.get_turtle_dump()) / (1024 * 1024)
         }
 
+# [Keep the entire ParliamentaryGraphQuerier class unchanged - it's working fine]
 class ParliamentaryGraphQuerier:
     """Database querier with full search functionality."""
 
@@ -381,14 +395,7 @@ class ParliamentaryGraphQuerier:
         return list(self.statements.aggregate(pipeline))
 
     def _calculate_unified_scores(self, results: List[Dict], query: str) -> List[Dict]:
-        """
-        Calculate unified scores using multiple factors:
-        - Vector similarity score
-        - Text relevance score  
-        - Query characteristics
-        - PageRank importance
-        - Provenance quality
-        """
+        """Calculate unified scores using multiple factors"""
         
         # Normalize scores to 0-1 range
         max_vector = max((r['vector_score'] for r in results), default=1)
@@ -430,9 +437,7 @@ class ParliamentaryGraphQuerier:
         return results
 
     def _get_dynamic_weights(self, query: str, result: Dict) -> Dict:
-        """
-        Dynamically adjust vector vs text weights based on query and result characteristics
-        """
+        """Dynamically adjust vector vs text weights based on query and result characteristics"""
         # Default weights
         vector_weight = 0.6
         text_weight = 0.4
@@ -718,31 +723,191 @@ class ParliamentaryGraphQuerier:
         if hasattr(self, 'client') and self.client:
             self.client.close()
 
-def convert_markdown_to_html_and_filter_links(markdown_text: str) -> str:
-    """Convert markdown to HTML and filter out non-YouTube links."""
+def parse_llm_json_response(response_text: str) -> Optional[StructuredResponse]:
+    """Parse LLM response as JSON with automatic repair and validation."""
     try:
-        # Convert markdown to HTML first
-        html = markdown.markdown(markdown_text, extensions=['extra', 'codehilite'])
+        logger.info(f"🔧 Parsing LLM response, length: {len(response_text)}")
         
-        # Parse with BeautifulSoup for link filtering and formatting
-        soup = BeautifulSoup(html, 'html.parser')
+        # Try to find JSON in the response
+        response_text = response_text.strip()
         
-        # Filter out non-YouTube links
-        links = soup.find_all('a')
-        for link in links:
-            href = link.get('href', '')
-            if 'youtube.com' not in href.lower():
-                link.replace_with(link.get_text())
+        # Look for JSON block markers
+        json_text = None
+        if "```json" in response_text:
+            start = response_text.find("```json") + 7
+            end = response_text.find("```", start)
+            if end != -1:
+                json_text = response_text[start:end].strip()
+            else:
+                json_text = response_text[start:].strip()
+        elif response_text.startswith("{"):
+            # Direct JSON response
+            json_text = response_text
+        else:
+            # Try to find JSON object in the text
+            start = response_text.find("{")
+            end = response_text.rfind("}") + 1
+            if start != -1 and end > start:
+                json_text = response_text[start:end]
+            else:
+                logger.error("No JSON found in response")
+                return None
         
-        # Clean up the HTML to remove excessive spacing
-        html_content = str(soup)
+        if not json_text:
+            logger.error("Could not extract JSON from response")
+            return None
         
-        return html_content
+        # Use json-repair which handles both valid and malformed JSON automatically
+        try:
+            parsed_data = repair_json(json_text, return_objects=True)
+            logger.info("✅ JSON parsed successfully with json-repair")
+        except Exception as e:
+            logger.error(f"❌ JSON repair failed: {e}")
+            return None
+        
+        if not parsed_data:
+            logger.error("Failed to get valid JSON data")
+            return None
+        
+        # Validate required fields
+        required_fields = ["intro_message", "response_cards", "follow_up_suggestions"]
+        missing_fields = [field for field in required_fields if field not in parsed_data]
+        
+        if missing_fields:
+            logger.error(f"Missing required fields in JSON response: {missing_fields}")
+            return None
+        
+        # Validate response_cards structure
+        if not isinstance(parsed_data["response_cards"], list):
+            logger.error("response_cards must be a list")
+            return None
+        
+        if not parsed_data["response_cards"]:
+            logger.warning("response_cards is empty, adding default card")
+            parsed_data["response_cards"] = [{
+                "summary": "Parliamentary information found",
+                "details": "No specific details were provided in the response."
+            }]
+        
+        # Validate each card
+        for i, card in enumerate(parsed_data["response_cards"]):
+            if not isinstance(card, dict):
+                logger.error(f"Card {i} is not a dictionary")
+                return None
+            
+            if "summary" not in card:
+                logger.warning(f"Card {i} missing summary, adding default")
+                card["summary"] = f"Information card {i + 1}"
+            
+            if "details" not in card:
+                logger.warning(f"Card {i} missing details, adding default")
+                card["details"] = "No details provided."
+        
+        # Validate follow_up_suggestions
+        if not isinstance(parsed_data["follow_up_suggestions"], list):
+            logger.warning("follow_up_suggestions is not a list, creating default")
+            parsed_data["follow_up_suggestions"] = [
+                "Tell me more about this topic",
+                "What are the latest developments?",
+                "Who are the key people involved?"
+            ]
+        
+        # Ensure we have at least some follow-up suggestions
+        if not parsed_data["follow_up_suggestions"]:
+            parsed_data["follow_up_suggestions"] = [
+                "What else would you like to know?",
+                "Any other parliamentary questions?"
+            ]
+        
+        # Create structured response
+        try:
+            return StructuredResponse(
+                intro_message=parsed_data["intro_message"],
+                response_cards=[
+                    ResponseCard(summary=card["summary"], details=card["details"])
+                    for card in parsed_data["response_cards"]
+                ],
+                follow_up_suggestions=parsed_data["follow_up_suggestions"]
+            )
+        except Exception as validation_error:
+            logger.error(f"Failed to create StructuredResponse: {validation_error}")
+            return None
         
     except Exception as e:
-        logger.error(f"Error processing markdown: {e}")
-        return markdown_text
+        logger.error(f"❌ Unexpected error parsing LLM response: {e}")
+        return None
 
+def convert_structured_response_to_html(structured_response: StructuredResponse, message_id: str = None) -> str:
+    """Convert structured response to HTML with expandable cards."""
+    try:
+        html_parts = []
+        
+        # Generate unique message ID if not provided
+        if not message_id:
+            import time
+            message_id = f"msg-{int(time.time() * 1000)}"
+        
+        # Intro message
+        intro_html = markdown.markdown(structured_response.intro_message, extensions=['extra', 'codehilite'])
+        html_parts.append(f'<div class="intro-message">{intro_html}</div>')
+        
+        # Response cards
+        html_parts.append('<div class="response-cards">')
+        
+        for i, card in enumerate(structured_response.response_cards):
+            # Use message_id to ensure unique card IDs across all messages
+            card_id = f"{message_id}-card-{i}"
+            
+            # Convert details markdown to HTML
+            details_html = markdown.markdown(card.details, extensions=['extra', 'codehilite'])
+            
+            # Filter out non-YouTube links from details
+            soup = BeautifulSoup(details_html, 'html.parser')
+            links = soup.find_all('a')
+            for link in links:
+                href = link.get('href', '')
+                if 'youtube.com' not in href.lower() and 'youtu.be' not in href.lower():
+                    link.replace_with(link.get_text())
+            details_html = str(soup)
+            
+            card_html = f'''
+            <div class="response-card" data-card-id="{card_id}">
+                <div class="card-header" onclick="toggleCard('{card_id}')">
+                    <div class="card-summary">{card.summary}</div>
+                    <div class="card-toggle">
+                        <span class="toggle-icon">▼</span>
+                    </div>
+                </div>
+                <div class="card-details collapsed" id="{card_id}-details">
+                    <div class="card-content">
+                        {details_html}
+                    </div>
+                </div>
+            </div>
+            '''
+            html_parts.append(card_html)
+        
+        html_parts.append('</div>')
+        
+        # Follow-up suggestions
+        html_parts.append('<div class="follow-up-suggestions">')
+        html_parts.append('<h4>Follow-up questions:</h4>')
+        html_parts.append('<ul class="suggestions-list">')
+        
+        for suggestion in structured_response.follow_up_suggestions:
+            html_parts.append(f'<li class="suggestion-item" onclick="sendSuggestion(\'{suggestion}\')">{suggestion}</li>')
+        
+        html_parts.append('</ul>')
+        html_parts.append('</div>')
+        
+        return ''.join(html_parts)
+        
+    except Exception as e:
+        logger.error(f"Error converting structured response to HTML: {e}")
+        # Fallback to simple display
+        return f'<div class="error-fallback">Error displaying response: {str(e)}</div>'
+
+# [Keep the ParliamentarySystem class largely unchanged, but update process_query method]
 class ParliamentarySystem:
     """Main parliamentary system using simple session management that works."""
     
@@ -856,113 +1021,46 @@ class ParliamentarySystem:
         bb_timezone = pytz.timezone("America/Barbados")
         current_date = datetime.now(bb_timezone).strftime("%Y-%m-%d")
 
+        # Read and format the prompt safely
+        try:
+            with open("prompt.md", "r", encoding="utf-8") as f:
+                prompt_content = f.read()
+            
+            # Replace only the specific current_date placeholder, not any other braces
+            formatted_prompt = prompt_content.replace("{current_date}", current_date)
+            logger.info("✅ Prompt loaded and formatted successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to load prompt.md: {e}")
+            # Fallback prompt
+            formatted_prompt = f"""You are YuhHearDem, an AI assistant for Barbados Parliament. 
+Current Date: {current_date}
+
+You must ALWAYS respond with valid JSON in this exact format:
+{{
+  "intro_message": "Your introductory message here",
+  "response_cards": [
+    {{
+      "summary": "Brief one-sentence summary",
+      "details": "Full detailed response with markdown formatting"
+    }}
+  ],
+  "follow_up_suggestions": [
+    "Follow-up question 1",
+    "Follow-up question 2", 
+    "Follow-up question 3"
+  ]
+}}
+
+Search for parliamentary information when asked about topics, ministers, debates, or policies."""
+
         # Create the main agent with enhanced tools
         self.agent = LlmAgent(
             name="YuhHearDem",
             model="gemini-2.5-flash-preview-05-20",
             description="AI assistant for Barbados Parliament with cumulative graph memory",
             planner=BuiltInPlanner(thinking_config=types.ThinkingConfig(thinking_budget=0)),
-            instruction=f"""I'm YuhHearDem, your friendly AI assistant here to help you understand Barbados Parliament. My main goal is to give you direct quotes and remember our conversations, especially the latest information.
-
-Current Date: {current_date}
-
-I'm designed to always search for specific parliamentary information when you ask about topics, focusing on the **most recent** sessions, debates, and announcements. I *love* finding and presenting **direct quotes** from MPs, ministers, and officials – those are my top priority!
-
-My memory works like a cumulative knowledge graph. As we chat and I search, it grows, building richer context with a strong emphasis on **recent developments**. This helps me connect related concepts across multiple questions, track chronological progression, and specifically organize **who said what and when**. This means you get deeper insights into how issues evolve over time, always with clear attribution.
-
----
-
-**Managing My Memory (Clearing the Graph)**
-
-My knowledge graph is super helpful, but sometimes we need a fresh start. I'll automatically clear our session's memory using my `clear_session_graph` tool when you explicitly change the topic to something completely unrelated, or if the conversation shifts dramatically to a different policy area – for example, if you say "let's talk about something else." This ensures my memory stays focused and isn't cluttered.
-
-**But don't worry, I won't clear it for related subtopics** (like going from 'education' to 'school funding' to 'teacher salaries'), or for temporal shifts within the same domain (like 'past policies' to 'current plans'). I'll keep that context!
-
-**Important:** If I do clear the graph, I'll **immediately** proceed to search for the new topic without asking for confirmation – just clear and search in sequence!
-
----
-
-**Finding Information (My Search Approach)**
-
-Whenever you ask about parliamentary topics, I jump straight to searching. I use my `search_parliament_hybrid` tool. If your topic is unrelated to what we've been discussing, I'll first clear my memory, then immediately search. If it's related, I'll just use the search tool right away with your new keywords.
-
-I'm always looking for the **latest statements and quotes** from key figures. When I search, I prioritize recent content by adding temporal keywords like "recent," "latest," "current," "2024," or "2025." I also use speaker-focused terms like "minister said," "MP stated," "government position," or "opposition response" to pinpoint direct quotes. I typically search for 5-8 results to get good coverage, and I might "hop" 2-3 times to find related information, always keeping the focus on recent and relevant context.
-
-I'll automatically search when you mention: water, infrastructure, education, health, budget, policies, economy, agriculture, tourism, schools, hospitals, music, culture, soca, carnival, arts, sports. And especially when you ask about ministers, MPs, or government officials, or any recent events, announcements, or decisions. If you ask "What did [person] say about...?" or "Who said...?", that's an immediate search trigger for me to find **specific statements, positions, or responses!**
-
----
-
-**Processing the Information (From Search to Understanding)**
-
-Once I get the search results, which are in something called 'Turtle data,' I immediately get to work! My first priority is to **extract direct quotes, speaker names, and all the attribution data** (like their title and the date). I look for entities, relationships, and properties, always paying close attention to **temporal markers** so I understand the chronological context. I prioritize information from the **most recent parliamentary sessions** and identify speaker roles and official positions.
-
-Then, I build responses that synthesize this information, showing how issues and statements have evolved over time. I use provenance information to cite video sources with timestamps (prioritizing recent sessions, of course!), identify trends, and map out response chains or dialogue between MPs on specific issues through their quotes.
-
----
-
-**Quote & Attribution Protocol - My Top Priority!**
-
-I always prioritize extracting and presenting:
--   **Direct quotes with exact attribution**: "Quote here" - Speaker Name, Title/Position
--   **Session dates and context**: When and where statements were made
--   **Multiple perspectives**: Different MPs' views on the same topic
--   **Response chains**: When MPs respond to each other's statements
--   **Policy positions**: Official government vs opposition statements
--   **Specific details**: Names, numbers, dates, and concrete commitments mentioned
-
-**I will never paraphrase when direct quotes are available.**
-
----
-
-**Response Format - Conversational with Rich Context, Temporal Awareness & Quote Emphasis**
-
-My responses will always be conversational, but they'll follow strict markdown rules. I'll always start with the **most recent and relevant direct quotes**. For example:
-`> "Direct quote here" - The Honourable [Full Name], [Title], [Session Date]`
-
-I'll group quotes by topic, then chronologically, often presenting the government's position first, then opposition responses. I'll show dialogue chains and how policy positions have changed through dated quotes. I'll include video sources with working YouTube URLs and timestamps (prioritizing recent sessions).
-
-I use language that emphasizes recency and development, like "In recent parliamentary sessions, Minister [Name] stated..." or "The latest discussions show [MP Name] arguing that..."
-
-Speak in Bajan, using local terms and phrases where appropriate, and always keep the tone friendly and engaging.
-
-**Markdown Formatting Requirements:**
-**CRITICAL: ALL responses must use valid markdown syntax. Follow these rules strictly:**
-
-*   **Quote Formatting (ENHANCED)**
-    *   **Primary Format**: `> "Direct quote here" - The Honourable [Full Name], [Title], [Session Date]`
-    *   **Follow-up References**: `> "Quote here" - [Minister/MP Last Name], [Date]`
-    *   **Multiple Quotes**: Use separate blockquote blocks for each speaker.
-    *   **Long Quotes**: Use `[...]` to indicate omissions, focusing on key statements.
-    *   **Dialogue Chains**: Use consecutive blockquotes to show exchanges between MPs.
-
-*   **Link Formatting**
-    *   **VALID**: `[Link Text](https://youtube.com/watch?v=ID&t=120s)`
-    *   **INVALID**: `[Link Text](invalid-url)` or `[Link Text]()` or broken URLs.
-    *   Always verify YouTube URLs follow format: `https://youtube.com/watch?v=VIDEO_ID` or `https://youtu.be/VIDEO_ID`.
-    *   For timestamps, use format: `&t=120s` (for 2 minutes) or `&t=1h30m45s`.
-    *   If no valid URL is available, use plain text instead of broken links.
-
-*   **Text Formatting - SIMPLE ONLY**
-    *   Use `**bold**` for key topics, speaker names on first mention, and emphasis (especially recent developments).
-    *   Use `*italic*` sparingly for titles or emphasis.
-    *   Use `-` for bullet points when listing items.
-    *   **NO HEADERS**: Do not use `#`, `##`, `###` - keep responses conversational with paragraphs only.
-
-*   **Content Structure - CONVERSATIONAL WITH TEMPORAL FLOW & QUOTE EMPHASIS**
-    *   **Start directly with most relevant quotes** - NO headers or titles.
-    *   **Begin with most recent information and statements when available**.
-    *   Use natural paragraphs to organize information **with chronological awareness**.
-    *   Use bullet points only when listing specific items.
-    *   **Organize multiple quotes clearly with proper attribution**.
-    *   Keep formatting minimal and conversational.
-    *   **Show temporal progression through dated statements and quote evolution**.
-
----
-
-Finally, I'll always end with 2-3 follow-up suggestions, encouraging you to explore more quotes or recent developments, like: "What did [Opposition MP] say in response to [Minister's] statement?" or "How has [Minister's] position on this issue evolved over recent sessions?"
-
-Remember: My memory allows me to build a sophisticated understanding, with a special emphasis on tracking recent developments, current issues, and **who said what**. I use this capability to provide rich, connected responses that highlight current parliamentary discourse through direct quotes, always prioritizing direct attribution and exact quotes for accuracy.""",
-        tools=[
+            instruction=formatted_prompt,
+            tools=[
                 FunctionTool(search_parliament_hybrid),
                 FunctionTool(clear_session_graph),
                 FunctionTool(get_session_graph_stats)
@@ -1021,7 +1119,7 @@ Remember: My memory allows me to build a sophisticated understanding, with a spe
             return fallback_id
     
     async def process_query(self, query: str, user_id: str = "user", session_id: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
-        """Process a query through the enhanced parliamentary agent."""
+        """Process a query through the enhanced parliamentary agent with JSON response parsing."""
         try:
             logger.info(f"🚀 Processing query: {query[:50]}...")
             
@@ -1090,25 +1188,75 @@ Remember: My memory allows me to build a sophisticated understanding, with a spe
                                 # Only use the final text response, not intermediate ones
                                 response_text = part.text  # This will be the final response
             
-            # Update conversation history
-            session_history.append({
-                "user": query,
-                "assistant": response_text
-            })
+            # Parse JSON response
+            structured_response = parse_llm_json_response(response_text)
             
-            # Trim history if too long
-            if len(session_history) > 8:
-                self.conversation_history[tracking_session_id] = session_history[-8:]
-            
-            # Clear session context
-            self.current_session_id = None
-            
-            # Return response with session graph stats
-            return response_text, {
-                "success": True, 
-                "session_id": tracking_session_id,  # Return the tracking session_id to the frontend
-                "graph_stats": session_graph.get_stats()
-            }
+            if structured_response:
+                # Convert to HTML with unique message ID
+                message_id = f"msg-{int(datetime.utcnow().timestamp() * 1000)}"
+                html_response = convert_structured_response_to_html(structured_response, message_id)
+                
+                # Update conversation history with the original query and structured response
+                session_history.append({
+                    "user": query,
+                    "assistant": response_text  # Store original for context
+                })
+                
+                # Trim history if too long
+                if len(session_history) > 8:
+                    self.conversation_history[tracking_session_id] = session_history[-8:]
+                
+                # Clear session context
+                self.current_session_id = None
+                
+                # Return structured response
+                return html_response, {
+                    "success": True, 
+                    "session_id": tracking_session_id,
+                    "graph_stats": session_graph.get_stats(),
+                    "structured_response": structured_response,
+                    "response_type": "structured"
+                }
+            else:
+                # Fallback to plain text if JSON parsing fails
+                logger.warning("Failed to parse JSON response, falling back to plain text")
+                
+                # Create a user-friendly fallback message instead of showing raw JSON
+                fallback_message = "I encountered an issue formatting my response properly. Here's what I found:\n\n" + response_text[:500]
+                if len(response_text) > 500:
+                    fallback_message += "..."
+                
+                # Convert markdown to HTML as fallback
+                html_response = markdown.markdown(fallback_message, extensions=['extra', 'codehilite'])
+                
+                # Filter out non-YouTube links
+                soup = BeautifulSoup(html_response, 'html.parser')
+                links = soup.find_all('a')
+                for link in links:
+                    href = link.get('href', '')
+                    if 'youtube.com' not in href.lower():
+                        link.replace_with(link.get_text())
+                html_response = str(soup)
+                
+                # Update conversation history
+                session_history.append({
+                    "user": query,
+                    "assistant": fallback_message
+                })
+                
+                # Trim history if too long
+                if len(session_history) > 8:
+                    self.conversation_history[tracking_session_id] = session_history[-8:]
+                
+                # Clear session context
+                self.current_session_id = None
+                
+                return html_response, {
+                    "success": True, 
+                    "session_id": tracking_session_id,
+                    "graph_stats": session_graph.get_stats(),
+                    "response_type": "fallback_error"
+                }
             
         except Exception as e:
             logger.error(f"Query processing failed: {e}")
@@ -1163,8 +1311,8 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="Enhanced Parliamentary Research API",
-    description="AI-powered Parliamentary research system with session graph persistence",
-    version="3.3.0",
+    description="AI-powered Parliamentary research system with robust JSON processing",
+    version="3.5.0",
     lifespan=lifespan
 )
 
@@ -1202,18 +1350,19 @@ async def process_query_with_events(query: str, user_id: str, session_id: str):
         response_text, status = await parliamentary_system.process_query(query, user_id, session_id)
         
         if status.get("success", False):
-            processed_response = convert_markdown_to_html_and_filter_links(response_text)
-            
             # Use actual session ID from the response
             actual_session_id = status.get("session_id", session_id)
             graph_stats = status.get("graph_stats", {})
+            structured_response = status.get("structured_response")
             
             yield format_sse_event("response_ready", "Assistant", "Response completed", {
-                "response": processed_response,
+                "response": response_text,
                 "message_id": str(uuid.uuid4()),
                 "session_id": actual_session_id,
                 "type": "parliamentary",
-                "graph_stats": graph_stats
+                "graph_stats": graph_stats,
+                "structured_response": structured_response.dict() if structured_response else None,
+                "response_type": status.get("response_type", "structured")
             })
         else:
             yield format_sse_event("error", "System", f"Error: {response_text}")
@@ -1233,10 +1382,10 @@ async def root(request: Request):
 async def api_info():
     """API information endpoint."""
     return {
-        "message": "YuhHearDem - Enhanced Parliamentary Research API with Simple Session Management",
+        "message": "YuhHearDem - Enhanced Parliamentary Research API with Robust JSON Processing",
         "status": "running",
-        "version": "3.3.0",
-        "features": ["simple_session_management", "session_graph_persistence", "turtle_processing", "cumulative_memory"]
+        "version": "3.5.0",
+        "features": ["robust_json_repair", "expandable_cards", "session_graph_persistence", "turtle_processing", "cumulative_memory"]
     }
 
 @app.get("/health")
@@ -1266,7 +1415,7 @@ async def health_check():
         "total_conversations": total_conversations,
         "session_graphs": len(parliamentary_system.session_graphs),
         "total_graph_edges": total_graph_edges,
-        "version": "3.3.0"
+        "version": "3.5.0"
     }
 
 @app.get("/session/{session_id}/graph")
@@ -1302,13 +1451,15 @@ async def query_endpoint(request: QueryRequest):
         
         if status.get("success", False):
             actual_session_id = status.get("session_id", "parliamentary_session")
+            structured_response = status.get("structured_response")
             
             return QueryResponse(
                 session_id=actual_session_id,
                 user_id=request.user_id,
                 message_id="msg_" + str(datetime.utcnow().timestamp()),
                 status="success",
-                message=convert_markdown_to_html_and_filter_links(response_text)
+                message=response_text,
+                structured_response=structured_response
             )
         else:
             raise HTTPException(status_code=500, detail=response_text)
@@ -1337,10 +1488,10 @@ async def query_stream(request: QueryRequest):
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
-    logger.info("🚀 Starting Enhanced Parliamentary Chatbot with Simple Session Management")
+    logger.info("🚀 Starting Enhanced Parliamentary Chatbot with Robust JSON Processing")
     logger.info(f"📡 Server will run on 0.0.0.0:{port}")
     logger.info("📋 Required: GOOGLE_API_KEY, MONGODB_CONNECTION_STRING")
-    logger.info("🔧 Fixed: Simple session management that actually works")
+    logger.info("🔧 New: Automatic JSON repair with json-repair library")
     
     uvicorn.run(
         "yuhheardem_chatbot:app",
