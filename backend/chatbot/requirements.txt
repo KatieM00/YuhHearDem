@@ -108,4 +108,4 @@ uvicorn==0.34.3
 websockets==15.0.1
 zipp==3.23.0
 pytz==2025.2
-
+json_repair==0.46.2
