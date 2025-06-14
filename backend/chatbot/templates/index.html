@@ -24,11 +24,20 @@
         }
 
         .gradient-bg {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        }
-
-        .chat-container {
-            height: calc(100vh - 280px);
+            background: radial-gradient(circle at 20% 20%, rgba(59, 130, 246, 0.15) 0%, transparent 90%),
+                        radial-gradient(circle at 80% 30%, rgba(99, 102, 241, 0.18) 0%, transparent 95%),
+                        radial-gradient(circle at 60% 80%, rgba(6, 182, 212, 0.12) 0%, transparent 85%),
+                        radial-gradient(circle at 30% 70%, rgba(139, 92, 246, 0.08) 0%, transparent 80%),
+                        radial-gradient(circle at 85% 85%, rgba(34, 211, 238, 0.1) 0%, transparent 85%),
+                        linear-gradient(135deg, 
+                            rgba(255, 255, 255, 1) 0%, 
+                            rgba(252, 254, 255, 1) 25%, 
+                            rgba(248, 250, 252, 0.99) 40%, 
+                            rgba(241, 245, 249, 0.97) 60%, 
+                            rgba(226, 232, 240, 0.9) 80%, 
+                            rgba(203, 213, 225, 0.8) 95%, 
+                            rgba(148, 163, 184, 0.7) 100%
+                        );
         }
 
         /* Thinking dots animation */
@@ -99,27 +108,55 @@
             }
         }
 
-        /* YouTube link styling */
+        /* Enhanced YouTube link styling */
         .message-bubble .text-gray-800 a[href*="youtube.com"],
         .message-bubble .text-gray-800 a[href*="youtu.be"] {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
             color: #dc2626;
             text-decoration: none;
-            border-bottom: 2px dashed #dc2626;
-            transition: all 0.2s ease;
+            background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+            border: 1px solid #fecaca;
+            border-radius: 0.75rem;
+            padding: 0.75rem 1rem;
+            font-weight: 500;
+            font-size: 0.9rem;
+            transition: all 0.3s ease;
+            margin: 0.25rem 0.25rem 0.25rem 0;
+            box-shadow: 0 1px 3px rgba(220, 38, 38, 0.1);
         }
 
         .message-bubble .text-gray-800 a[href*="youtube.com"]:hover,
         .message-bubble .text-gray-800 a[href*="youtu.be"]:hover {
-            background-color: rgba(220, 38, 38, 0.1);
-            transform: translateY(-1px);
+            background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+            border-color: #f87171;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(220, 38, 38, 0.2);
+            color: #b91c1c;
+        }
+
+        .message-bubble .text-gray-800 a[href*="youtube.com"]:before,
+        .message-bubble .text-gray-800 a[href*="youtu.be"]:before {
+            content: "▶";
+            font-size: 1rem;
+            color: #dc2626;
+            font-weight: bold;
+            background: rgba(220, 38, 38, 0.1);
+            border-radius: 50%;
+            width: 1.5rem;
+            height: 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 0.25rem;
         }
 
         .message-bubble .text-gray-800 a[href*="youtube.com"]:after,
         .message-bubble .text-gray-800 a[href*="youtu.be"]:after {
-            content: " ▶";
-            font-size: 0.9em;
-            color: #dc2626;
-            margin-left: 2px;
+            content: "🎥";
+            font-size: 1rem;
+            margin-left: 0.25rem;
         }
 
         /* Enhanced markdown formatting */
@@ -223,6 +260,20 @@
         .message-bubble .text-gray-800 pre code {
             background: none;
             padding: 0;
+        }
+
+        /* Regular links styling */
+        .message-bubble .text-gray-800 a:not([href*="youtube.com"]):not([href*="youtu.be"]) {
+            color: #3b82f6;
+            text-decoration: underline;
+            text-decoration-color: rgba(59, 130, 246, 0.3);
+            text-underline-offset: 0.125rem;
+            transition: all 0.2s ease;
+        }
+
+        .message-bubble .text-gray-800 a:not([href*="youtube.com"]):not([href*="youtu.be"]):hover {
+            color: #1d4ed8;
+            text-decoration-color: #1d4ed8;
         }
 
         /* RESPONSE CARD STYLES */
@@ -393,12 +444,88 @@
             }
         }
 
+        /* Colorful Starter prompt buttons */
+        .starter-prompts {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            justify-content: center;
+            margin-top: 2rem;
+        }
+
+        .starter-prompt-btn {
+            color: white;
+            padding: 0.75rem 1.25rem;
+            border-radius: 2rem;
+            font-weight: 500;
+            font-size: 0.9rem;
+            border: none;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .starter-prompt-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        /* Healthcare - Blue/Teal */
+        .starter-prompt-btn.healthcare {
+            background: linear-gradient(135deg, #0ea5e9 0%, #06b6d4 100%);
+            box-shadow: 0 2px 8px rgba(14, 165, 233, 0.3);
+        }
+
+        .starter-prompt-btn.healthcare:hover {
+            background: linear-gradient(135deg, #0284c7 0%, #0891b2 100%);
+            box-shadow: 0 4px 16px rgba(14, 165, 233, 0.4);
+        }
+
+        /* Water - Green/Emerald */
+        .starter-prompt-btn.water {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+        }
+
+        .starter-prompt-btn.water:hover {
+            background: linear-gradient(135deg, #059669 0%, #047857 100%);
+            box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4);
+        }
+
+        /* Tourism - Orange/Amber */
+        .starter-prompt-btn.tourism {
+            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+            box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+        }
+
+        .starter-prompt-btn.tourism:hover {
+            background: linear-gradient(135deg, #d97706 0%, #b45309 100%);
+            box-shadow: 0 4px 16px rgba(245, 158, 11, 0.4);
+        }
+
+        /* Economic - Purple/Violet */
+        .starter-prompt-btn.economic {
+            background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+            box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);
+        }
+
+        .starter-prompt-btn.economic:hover {
+            background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
+            box-shadow: 0 4px 16px rgba(139, 92, 246, 0.4);
+        }
+
+        /* Chat input area styling */
+        .chat-input-area {
+            background: white;
+            border-top: 1px solid #e5e7eb;
+            padding: 1.5rem;
+            position: sticky;
+            bottom: 0;
+            z-index: 10;
+        }
+
         /* Mobile responsive */
         @media (max-width: 768px) {
-            .chat-container {
-                height: calc(100vh - 250px);
-            }
-            
             .thinking-dots-container {
                 margin-left: 36px;
             }
@@ -415,6 +542,19 @@
                 font-size: 0.9rem;
                 margin-right: 0.5rem;
             }
+
+            .starter-prompts {
+                gap: 0.5rem;
+            }
+
+            .starter-prompt-btn {
+                padding: 0.5rem 1rem;
+                font-size: 0.8rem;
+            }
+
+            .chat-input-area {
+                padding: 1rem;
+            }
         }
 
         @media (max-width: 640px) {
@@ -429,52 +569,85 @@
         }
     </style>
 </head>
-<body class="bg-gray-50 min-h-screen">
-    <header class="gradient-bg text-white shadow-lg">
-        <div class="container mx-auto px-4 py-6">
+<body class="bg-gray-50 min-h-screen gradient-bg">
+    <header class="bg-gradient-to-r from-white via-gray-50 to-white border-b border-gray-200 text-gray-800 shadow-xl">
+        <div class="container mx-auto px-4 py-4">
             <div class="flex items-center justify-between">
                 <div>
-                    <h1 class="text-3xl font-bold">YuhHearDem</h1>
-                    <p class="text-blue-100 mt-1">AI Parliamentary Research Assistant for Barbados</p>
+                    <h1 class="text-3xl font-bold text-gray-900">YuhHearDem</h1>
+                    <p class="text-gray-600 mt-1">AI Parliamentary Research Assistant for Barbados</p>
                 </div>
                 <div class="flex items-center space-x-4">
                     <div id="connectionStatus" class="flex items-center">
                         <div class="w-3 h-3 rounded-full bg-green-400 mr-2"></div>
                         <span class="text-sm">Connected</span>
                     </div>
-                    <button id="clearChat" class="bg-white bg-opacity-20 hover:bg-opacity-30 px-4 py-2 rounded-lg transition-colors">Clear Chat</button>
+                    <button id="clearChat" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg transition-colors border border-gray-300">Clear Chat</button>
                 </div>
             </div>
         </div>
     </header>
     
-    <div class="container mx-auto px-4 py-6 pb-4">
-        <div class="bg-white rounded-lg shadow-lg overflow-hidden mb-6">
-            <div id="chatContainer" class="chat-container overflow-y-auto p-6 space-y-4">
-                <div class="message-bubble">
-                    <div class="flex items-start space-x-3">
-                        <div class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-semibold">YH</div>
-                        <div class="flex-1">
-                            <div class="bg-blue-50 rounded-lg p-4">
-                                <p class="text-gray-800">Hello! I'm YuhHearDem, your AI assistant for researching Barbados Parliament discussions. Ask me about parliamentary debates, minister statements, bills, or any topic discussed in Parliament.</p>
-                                <p class="text-gray-600 text-sm mt-2"><strong>Examples:</strong> "What did the Minister of Health say about COVID-19?" or "Recent discussions about water management"</p>
-                                <p class="text-gray-600 text-sm mt-2"><strong>New Feature:</strong> My responses now come in expandable cards - click to explore details!</p>
-                            </div>
+    <div class="container mx-auto px-4 py-6 max-w-6xl">
+        <!-- Welcome Section -->
+        <div class="mb-6">
+            <div class="bg-blue-50 border border-blue-200 rounded-lg p-6">
+                <div class="flex items-start space-x-3">
+                    <div class="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-semibold">YH</div>
+                    <div class="flex-1">
+                        <h2 class="text-xl font-semibold text-gray-800 mb-3 flex items-center">
+                            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                            </svg>
+                            Ask About Barbadian Politics
+                        </h2>
+                        <p class="text-gray-800 mb-2">
+                            Hey! I'm YuhHearDem<img src="https://flagcdn.com/w20/bb.png" alt="Barbados Flag" style="width: 20px; height: 14px; display: inline-block; margin-left: 4px;"> Your AI guide to what's happening in Barbados' Parliament. From debates to decisions, I’m here to help you stay informed and involved. Ask me anything — it’s your right to know!
+                        </p>
+                        <p class="text-gray-600 text-sm mb-2"><strong>Examples:</strong> "What did the Minister of Health say about COVID-19?" or "Recent discussions about water management"</p>
+
+                        
+                        <!-- Colorful Starter Prompts -->
+                        <div class="starter-prompts">
+                            <button class="starter-prompt-btn healthcare" onclick="sendSuggestion('What did the Minister of Health say about COVID-19?')">
+                                🏥 Healthcare Policy
+                            </button>
+                            <button class="starter-prompt-btn water" onclick="sendSuggestion('Recent discussions about water management')">
+                                💧 Water Management
+                            </button>
+                            <button class="starter-prompt-btn tourism" onclick="sendSuggestion('What bills were discussed about tourism development?')">
+                                🏖️ Tourism Development
+                            </button>
+                            <button class="starter-prompt-btn economic" onclick="sendSuggestion('Recent parliamentary debates on economic reform')">
+                                📈 Economic Reform
+                            </button>
                         </div>
                     </div>
                 </div>
             </div>
-            
-            <div class="border-t p-4 bg-white">
-                <div class="flex space-x-3">
-                    <input type="text" id="queryInput" placeholder="Ask about parliamentary discussions, ministers, bills, or policies..." class="flex-1 border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" disabled>
-                    <button id="sendButton" class="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white px-6 py-3 rounded-lg font-semibold transition-colors disabled:cursor-not-allowed" disabled>Send</button>
-                </div>
-                <div id="inputStatus" class="text-sm text-gray-500 mt-2">Connecting to YuhHearDem service...</div>
-            </div>
+        </div>
+
+        <!-- Chat Messages -->
+        <div id="chatContainer" class="space-y-4 mb-6">
+            <!-- Messages will be added here dynamically -->
         </div>
         
-        <div class="text-center text-sm text-gray-500 pb-4">
+        <!-- Input Area -->
+        <div class="chat-input-area rounded-lg shadow-lg border border-gray-200">
+            <div class="flex space-x-3">
+                <input type="text" id="queryInput" placeholder="Ask about parliamentary discussions, ministers, bills, or policies..." class="flex-1 border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" disabled>
+                <button id="sendButton" class="bg-gradient-to-r from-emerald-300 to-green-400 hover:from-emerald-400 hover:to-green-500 disabled:from-gray-400 disabled:to-gray-500 text-white px-6 py-3 rounded-lg font-semibold transition-colors disabled:cursor-not-allowed flex items-center space-x-2 shadow-lg hover:shadow-xl" disabled>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
+                    </svg>
+                    <span>Send</span>
+                </button>
+            </div>
+            <div id="inputStatus" class="text-sm text-gray-500 mt-2">Connecting to YuhHearDem service...</div>
+        </div>
+        
+        <!-- Session Info -->
+        <div class="text-center text-sm text-gray-500 mt-4">
             <span id="sessionInfo">Session ID: <span id="sessionId">Generating...</span> | User ID: <span id="userId">Generating...</span></span>
             <span id="sessionStatus" class="ml-2 px-2 py-1 rounded text-xs"></span>
         </div>
@@ -526,12 +699,12 @@
 
         var chatApp = {
             // Configuration
-            apiBase: window.location.origin,
+            apiBase: 'https://yuhheardem-chatbot-1074852466398.us-east1.run.app',
             userId: null,
             sessionId: null,
             isProcessing: false,
             currentThinkingDots: null,
-            messageCounter: 0, // Add counter for unique message IDs
+            messageCounter: 0,
             
             // DOM elements
             elements: {
@@ -829,16 +1002,16 @@
                 messageDiv.setAttribute('data-message-id', messageId);
                 
                 var avatarBg = 'bg-blue-500';
-                var bubbleBg = 'bg-blue-50';
+                var bubbleBg = 'bg-blue-50 border border-blue-200';
                 var avatarText = 'YH';
                 
                 messageDiv.innerHTML = 
-                    '<div class="flex items-start space-x-3">' +
-                        '<div class="w-8 h-8 rounded-full ' + avatarBg + ' flex items-center justify-center text-white text-sm font-semibold">' + avatarText + '</div>' +
-                        '<div class="flex-1">' +
-                            '<div class="' + bubbleBg + ' rounded-lg p-4">' +
+                    '<div class="rounded-lg p-6 ' + bubbleBg + '">' +
+                        '<div class="flex items-start space-x-3">' +
+                            '<div class="w-10 h-10 rounded-full ' + avatarBg + ' flex items-center justify-center text-white text-sm font-semibold">' + avatarText + '</div>' +
+                            '<div class="flex-1">' +
                                 '<div class="text-gray-800">' + htmlContent + '</div>' +
-                                '<div class="text-xs text-gray-500 mt-2">' + new Date().toLocaleTimeString() + '</div>' +
+                                '<div class="text-xs text-gray-500 mt-3">' + new Date().toLocaleTimeString() + '</div>' +
                             '</div>' +
                         '</div>' +
                     '</div>';
@@ -865,7 +1038,7 @@
                 
                 var isUser = sender === 'user';
                 var avatarBg = isUser ? 'bg-green-500' : 'bg-blue-500';
-                var bubbleBg = isUser ? 'bg-green-50' : 'bg-blue-50';
+                var bubbleBg = isUser ? 'bg-green-50 border border-green-200' : 'bg-blue-50 border border-blue-200';
                 var avatarText = isUser ? 'U' : 'YH';
                 
                 var htmlContent;
@@ -890,12 +1063,12 @@
                 var reverseClass = isUser ? 'flex-row-reverse space-x-reverse' : '';
                 
                 messageDiv.innerHTML = 
-                    '<div class="flex items-start space-x-3 ' + reverseClass + '">' +
-                        '<div class="w-8 h-8 rounded-full ' + avatarBg + ' flex items-center justify-center text-white text-sm font-semibold">' + avatarText + '</div>' +
-                        '<div class="flex-1">' +
-                            '<div class="' + bubbleBg + ' rounded-lg p-4">' +
+                    '<div class="rounded-lg p-6 ' + bubbleBg + '">' +
+                        '<div class="flex items-start space-x-3 ' + reverseClass + '">' +
+                            '<div class="w-10 h-10 rounded-full ' + avatarBg + ' flex items-center justify-center text-white text-sm font-semibold">' + avatarText + '</div>' +
+                            '<div class="flex-1">' +
                                 '<div class="text-gray-800">' + htmlContent + '</div>' +
-                                '<div class="text-xs text-gray-500 mt-2">' + new Date().toLocaleTimeString() + '</div>' +
+                                '<div class="text-xs text-gray-500 mt-3">' + new Date().toLocaleTimeString() + '</div>' +
                             '</div>' +
                         '</div>' +
                     '</div>';
@@ -923,14 +1096,15 @@
             },
             
             scrollToBottom: function() {
-                this.elements.chatContainer.scrollTop = this.elements.chatContainer.scrollHeight;
+                window.scrollTo({
+                    top: document.body.scrollHeight,
+                    behavior: 'smooth'
+                });
             },
             
             clearChat: function() {
-                var messages = this.elements.chatContainer.querySelectorAll('.message-bubble');
-                for (var i = 1; i < messages.length; i++) {
-                    messages[i].remove();
-                }
+                // Clear all messages
+                this.elements.chatContainer.innerHTML = '';
                 
                 // Reset message counter
                 this.messageCounter = 0;
