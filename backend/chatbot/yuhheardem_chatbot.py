@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Enhanced Parliamentary Chatbot - MongoDB Session Storage
-========================================================
+Enhanced Parliamentary Chatbot - MongoDB Session Storage with Graph Visualization
+===============================================================================
 
-Updated to use MongoDB for persistent ADK chat history and session management.
+Updated to use MongoDB for persistent ADK chat history and session management,
+now includes interactive knowledge graph visualization.
 """
 
 import os
@@ -83,7 +84,6 @@ class QueryResponse(BaseModel):
     message: Optional[str] = None
     structured_response: Optional[StructuredResponse] = None
 
-# [Keep all the existing SessionGraphState, ParliamentaryGraphQuerier classes unchanged]
 class SessionGraphState:
     """Manages cumulative graph state for a session."""
     
@@ -156,7 +156,6 @@ class SessionGraphState:
             "size_mb": len(self.get_turtle_dump()) / (1024 * 1024)
         }
 
-# [Keep the entire ParliamentaryGraphQuerier class unchanged - it's working fine]
 class ParliamentaryGraphQuerier:
     """Database querier with full search functionality."""
 
@@ -910,9 +909,9 @@ def convert_structured_response_to_html(structured_response: StructuredResponse,
         # Fallback to simple display
         return f'<div class="error-fallback">Error displaying response: {str(e)}</div>'
 
-# Updated ParliamentarySystem class with MongoDB session management
+# Updated ParliamentarySystem class with graph visualization
 class ParliamentarySystem:
-    """Main parliamentary system using MongoDB session management."""
+    """Main parliamentary system using MongoDB session management with graph visualization."""
     
     def __init__(self, google_api_key: str):
         self.google_api_key = google_api_key
@@ -1025,6 +1024,29 @@ class ParliamentarySystem:
             else:
                 return json.dumps({"error": "No active session"})
         
+        def visualize_knowledge_graph(reason: str = "User requested visualization") -> str:
+            """
+            Visualize the current session's knowledge graph as an interactive network.
+            
+            Args:
+                reason: Why you're showing the graph (optional)
+            
+            Returns:
+                Interactive HTML graph visualization
+            """
+            try:
+                if not self.current_session_id:
+                    return "No active session to visualize. Start a conversation first!"
+                
+                logger.info(f"📊 Generating graph visualization: {reason}")
+                html_viz = self.visualize_session_graph(self.current_session_id)
+                
+                return html_viz
+                
+            except Exception as e:
+                logger.error(f"Failed to visualize graph: {e}")
+                return f"Error generating graph visualization: {e}"
+        
         bb_timezone = pytz.timezone("America/Barbados")
         current_date = datetime.now(bb_timezone).strftime("%Y-%m-%d")
 
@@ -1060,17 +1082,18 @@ You must ALWAYS respond with valid JSON in this exact format:
 
 Search for parliamentary information when asked about topics, ministers, debates, or policies."""
 
-        # Create the main agent with enhanced tools
+        # Create the main agent with enhanced tools including graph visualization
         self.agent = LlmAgent(
             name="YuhHearDem",
             model="gemini-2.5-flash-preview-05-20",
-            description="AI assistant for Barbados Parliament with cumulative graph memory",
+            description="AI assistant for Barbados Parliament with cumulative graph memory and visualization",
             planner=BuiltInPlanner(thinking_config=types.ThinkingConfig(thinking_budget=0)),
             instruction=formatted_prompt,
             tools=[
                 FunctionTool(search_parliament_hybrid),
                 FunctionTool(clear_session_graph),
-                FunctionTool(get_session_graph_stats)
+                FunctionTool(get_session_graph_stats),
+                FunctionTool(visualize_knowledge_graph)
             ],
             generate_content_config=GenerateContentConfig(
                 temperature=0.1,
@@ -1096,6 +1119,167 @@ Search for parliamentary information when asked about topics, ministers, debates
             logger.info(f"📊 Created new session graph for {session_id[:8]}")
         return self.session_graphs[session_id]
     
+    def visualize_session_graph(self, session_id: str = None, max_nodes: int = 100) -> str:
+        """
+        Visualize the current session graph as an interactive network.
+        
+        Args:
+            session_id: Session to visualize (uses current if None)
+            max_nodes: Maximum nodes to display for performance
+        
+        Returns:
+            HTML with embedded D3.js visualization
+        """
+        try:
+            target_session = session_id or self.current_session_id
+            if not target_session:
+                return "# Error: No active session to visualize\n"
+            
+            if target_session not in self.session_graphs:
+                return "# Error: Session graph not found\n"
+            
+            session_graph = self.session_graphs[target_session]
+            
+            if session_graph.edge_count == 0:
+                return "# Session graph is empty - start a conversation to build the knowledge graph!\n"
+            
+            # Extract all nodes and their metadata from the RDF graph
+            nodes_data = {}
+            edges = []
+            
+            # First pass: collect all node URIs and find their labels
+            for subject, predicate, obj in session_graph.graph:
+                subj_uri = str(subject)
+                pred_uri = str(predicate)
+                obj_uri = str(obj) if str(obj).startswith("http") else None
+                
+                # Initialize node data if not exists
+                if subj_uri not in nodes_data:
+                    nodes_data[subj_uri] = {
+                        "uri": subj_uri,
+                        "id": self._extract_display_name(subj_uri),
+                        "label": None,
+                        "name": None,
+                        "type": None,
+                        "properties": {}
+                    }
+                
+                if obj_uri and obj_uri not in nodes_data:
+                    nodes_data[obj_uri] = {
+                        "uri": obj_uri,
+                        "id": self._extract_display_name(obj_uri),
+                        "label": None,
+                        "name": None,
+                        "type": None,
+                        "properties": {}
+                    }
+                
+                # Collect properties for subject node
+                if pred_uri.endswith("/label") or pred_uri.endswith("#label"):
+                    nodes_data[subj_uri]["label"] = str(obj)
+                elif pred_uri.endswith("/name") or pred_uri.endswith("#name"):
+                    nodes_data[subj_uri]["name"] = str(obj)
+                elif pred_uri.endswith("/type") or pred_uri.endswith("#type"):
+                    nodes_data[subj_uri]["type"] = str(obj)
+                else:
+                    # Store other properties
+                    prop_name = self._extract_display_name(pred_uri)
+                    nodes_data[subj_uri]["properties"][prop_name] = str(obj)
+                
+                # Add edge if both nodes are URIs
+                if obj_uri:
+                    edges.append({
+                        "source": self._extract_display_name(subj_uri),
+                        "target": self._extract_display_name(obj_uri),
+                        "label": self._extract_display_name(pred_uri),
+                        "predicate": pred_uri
+                    })
+            
+            # Convert to final node format with rich labels
+            nodes = []
+            for uri, node_data in nodes_data.items():
+                # Determine the best display label
+                display_label = (
+                    node_data["label"] or 
+                    node_data["name"] or 
+                    node_data["id"]
+                )
+                
+                # Clean up the label (remove quotes, limit length)
+                if display_label.startswith('"') and display_label.endswith('"'):
+                    display_label = display_label[1:-1]
+                
+                # Truncate very long labels
+                if len(display_label) > 50:
+                    display_label = display_label[:47] + "..."
+                
+                node = {
+                    "id": node_data["id"],
+                    "uri": uri,
+                    "label": display_label,
+                    "original_label": node_data["label"],
+                    "name": node_data["name"],
+                    "type": node_data["type"],
+                    "properties": node_data["properties"]
+                }
+                nodes.append(node)
+            
+            # Sort by importance (nodes with more properties first)
+            nodes.sort(key=lambda x: len(x["properties"]), reverse=True)
+            
+            # Limit nodes for performance but keep more
+            if len(nodes) > max_nodes:
+                nodes = nodes[:max_nodes]
+                # Filter edges to only include remaining nodes
+                node_ids = {node["id"] for node in nodes}
+                edges = [edge for edge in edges if edge["source"] in node_ids and edge["target"] in node_ids]
+            
+            # Load and render template
+            from jinja2 import Environment, FileSystemLoader
+            env = Environment(loader=FileSystemLoader('templates'))
+            template = env.get_template('graph_visualization.html')
+            
+            html_content = template.render(
+                nodes=nodes,
+                edges=edges,
+                stats=session_graph.get_stats()
+            )
+            
+            logger.info(f"📊 Generated graph visualization: {len(nodes)} nodes, {len(edges)} edges")
+            return html_content
+            
+        except Exception as e:
+            logger.error(f"❌ Graph visualization failed: {e}")
+            return f"# Error generating graph visualization: {str(e)}\n"
+
+    def _extract_display_name(self, uri: str) -> str:
+        """Extract a human-readable name from a URI."""
+        if not uri.startswith("http"):
+            return uri[:50]  # Literal value, truncate if long
+        
+        # Extract the fragment or last path component
+        if "#" in uri:
+            return uri.split("#")[-1]
+        elif "/" in uri:
+            return uri.split("/")[-1]
+        else:
+            return uri
+
+    def _get_node_type(self, uri: str) -> str:
+        """Determine node type from URI for color coding."""
+        uri_lower = uri.lower()
+        
+        if "person" in uri_lower or "mp" in uri_lower or "minister" in uri_lower:
+            return "person"
+        elif "bill" in uri_lower or "act" in uri_lower or "legislation" in uri_lower:
+            return "legislation"
+        elif "committee" in uri_lower or "parliament" in uri_lower:
+            return "institution"
+        elif "topic" in uri_lower or "policy" in uri_lower:
+            return "topic"
+        else:
+            return "entity"
+    
     async def get_or_create_session(self, user_id: str, session_id: Optional[str] = None) -> Tuple[str, str]:
         """Get existing session or create a new one using MongoDB."""
         try:
@@ -1117,7 +1301,7 @@ Search for parliamentary information when asked about topics, ministers, debates
             new_session = await self.session_manager.create_session(
                 user_id=user_id,
                 session_id=session_id,
-                metadata={"created_via": "parliamentary_system", "version": "3.5.0"}
+                metadata={"created_via": "parliamentary_system", "version": "3.6.0"}
             )
             
             # Create corresponding ADK session
@@ -1173,6 +1357,10 @@ Search for parliamentary information when asked about topics, ministers, debates
         """Process a query through the enhanced parliamentary agent with MongoDB session storage."""
         try:
             logger.info(f"🚀 Processing query: {query[:50]}...")
+            
+            # Check if this is a graph visualization request
+            if "visualize" in query.lower() and "graph" in query.lower():
+                logger.info("📊 Detected graph visualization request")
             
             # Get or create session - returns both tracking session ID and ADK session ID
             tracking_session_id, adk_session_id = await self.get_or_create_session(user_id, session_id)
@@ -1393,12 +1581,12 @@ def create_system() -> ParliamentarySystem:
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
-    logger.info("🚀 Starting Enhanced Parliamentary Chatbot System with MongoDB Sessions...")
+    logger.info("🚀 Starting Enhanced Parliamentary Chatbot System with MongoDB Sessions and Graph Visualization...")
     
     global parliamentary_system
     try:
         parliamentary_system = create_system()
-        logger.info("✅ Enhanced Parliamentary System with MongoDB sessions created successfully")
+        logger.info("✅ Enhanced Parliamentary System with MongoDB sessions and graph visualization created successfully")
     except Exception as e:
         logger.error(f"❌ Failed to create Parliamentary system: {e}")
         parliamentary_system = None
@@ -1415,10 +1603,13 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="Enhanced Parliamentary Research API",
-    description="AI-powered Parliamentary research system with MongoDB session persistence",
-    version="4.0.0",
+    description="AI-powered Parliamentary research system with MongoDB session persistence and interactive graph visualization",
+    version="4.1.0",
     lifespan=lifespan
 )
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Setup templates
 templates = Jinja2Templates(directory="templates")
@@ -1486,10 +1677,10 @@ async def root(request: Request):
 async def api_info():
     """API information endpoint."""
     return {
-        "message": "YuhHearDem - Enhanced Parliamentary Research API with MongoDB Session Storage",
+        "message": "YuhHearDem - Enhanced Parliamentary Research API with MongoDB Session Storage and Graph Visualization",
         "status": "running",
-        "version": "4.0.0",
-        "features": ["mongodb_sessions", "audit_compliant_archiving", "persistent_chat_history", "robust_json_repair", "expandable_cards", "session_graph_persistence", "turtle_processing", "cumulative_memory"]
+        "version": "4.1.0",
+        "features": ["mongodb_sessions", "audit_compliant_archiving", "persistent_chat_history", "robust_json_repair", "expandable_cards", "session_graph_persistence", "turtle_processing", "cumulative_memory", "interactive_graph_visualization"]
     }
 
 @app.get("/health")
@@ -1529,7 +1720,7 @@ async def health_check():
         "session_graphs_in_memory": len(parliamentary_system.session_graphs),
         "total_graph_edges": total_graph_edges,
         "session_stats": session_stats,
-        "version": "4.0.0"
+        "version": "4.1.0"
     }
 
 @app.get("/session/{session_id}")
@@ -1600,6 +1791,20 @@ async def get_session_graph(session_id: str):
         "turtle_data": turtle_data,
         "stats": session_graph.get_stats()
     }
+
+@app.get("/session/{session_id}/graph/visualize")
+async def visualize_session_graph(session_id: str):
+    """Get the session graph as interactive HTML visualization."""
+    if not parliamentary_system:
+        raise HTTPException(status_code=503, detail="System not initialized")
+    
+    try:
+        html_content = parliamentary_system.visualize_session_graph(session_id)
+        return HTMLResponse(content=html_content)
+        
+    except Exception as e:
+        logger.error(f"Failed to visualize session graph: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/user/{user_id}/sessions")
 async def get_user_sessions(user_id: str, limit: int = 10, include_archived: bool = False):
@@ -1708,7 +1913,7 @@ async def get_system_stats():
         
         return {
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "4.0.0",
+            "version": "4.1.0",
             "session_stats": session_stats,
             "graph_stats": graph_stats
         }
@@ -1738,10 +1943,10 @@ async def archive_old_sessions(days_old: int = 365):
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
-    logger.info("🚀 Starting Enhanced Parliamentary Chatbot with MongoDB Session Storage")
+    logger.info("🚀 Starting Enhanced Parliamentary Chatbot with MongoDB Session Storage and Graph Visualization")
     logger.info(f"📡 Server will run on 0.0.0.0:{port}")
     logger.info("📋 Required: GOOGLE_API_KEY, MONGODB_CONNECTION_STRING")
-    logger.info("🔧 New: MongoDB persistent session storage with audit-compliant archiving")
+    logger.info("🔧 New: Interactive knowledge graph visualization with D3.js")
     
     uvicorn.run(
         "yuhheardem_chatbot:app",
