@@ -1119,7 +1119,7 @@ Search for parliamentary information when asked about topics, ministers, debates
             logger.info(f"📊 Created new session graph for {session_id[:8]}")
         return self.session_graphs[session_id]
     
-    def visualize_session_graph(self, session_id: str = None, max_nodes: int = 100) -> str:
+    def visualize_session_graph(self, session_id: str = None, max_nodes: int = 500) -> str:
         """
         Visualize the current session graph as an interactive network with better connectivity.
         
