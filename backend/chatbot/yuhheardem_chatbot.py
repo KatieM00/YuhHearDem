@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Enhanced Parliamentary Chatbot - JSON Response Processing with Repair
-====================================================================
+Enhanced Parliamentary Chatbot - MongoDB Session Storage
+========================================================
 
-Updated to handle JSON responses from LLM with automatic JSON repair.
+Updated to use MongoDB for persistent ADK chat history and session management.
 """
 
 import os
@@ -47,6 +47,9 @@ from json_repair import repair_json
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import pytz
+
+# Import our new session manager
+from session_manager import MongoSessionManager, ChatMessage, ChatSession
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -907,14 +910,18 @@ def convert_structured_response_to_html(structured_response: StructuredResponse,
         # Fallback to simple display
         return f'<div class="error-fallback">Error displaying response: {str(e)}</div>'
 
-# [Keep the ParliamentarySystem class largely unchanged, but update process_query method]
+# Updated ParliamentarySystem class with MongoDB session management
 class ParliamentarySystem:
-    """Main parliamentary system using simple session management that works."""
+    """Main parliamentary system using MongoDB session management."""
     
     def __init__(self, google_api_key: str):
         self.google_api_key = google_api_key
         self.querier = ParliamentaryGraphQuerier()
-        self.conversation_history = {}  # Store by session_id
+        
+        # Initialize MongoDB session manager
+        self.session_manager = MongoSessionManager()
+        
+        # Keep graph memory separate from chat history (in memory for now)
         self.session_graphs = {}  # Store SessionGraphState by session_id
         
         # Track current session for tool context
@@ -1073,12 +1080,12 @@ Search for parliamentary information when asked about topics, ministers, debates
         
         # Use simpler session approach - just create sessions when we need them
         from google.adk.sessions import InMemorySessionService
-        self.session_service = InMemorySessionService()
+        self.adk_session_service = InMemorySessionService()
         
         from google.adk.runners import Runner
         self.runner = Runner(
             agent=self.agent,
-            session_service=self.session_service,
+            session_service=self.adk_session_service,
             app_name="YuhHearDem"
         )
     
@@ -1089,45 +1096,86 @@ Search for parliamentary information when asked about topics, ministers, debates
             logger.info(f"📊 Created new session graph for {session_id[:8]}")
         return self.session_graphs[session_id]
     
-    async def get_or_create_session(self, user_id: str, session_id: Optional[str] = None) -> str:
-        """Get existing session or create a new one - simple approach."""
-        # Always create a new ADK session - this is simpler and more reliable
+    async def get_or_create_session(self, user_id: str, session_id: Optional[str] = None) -> Tuple[str, str]:
+        """Get existing session or create a new one using MongoDB."""
         try:
-            # Create a fresh ADK session each time
-            adk_session = await self.session_service.create_session(
+            # If session_id provided, try to get existing session
+            if session_id:
+                existing_session = await self.session_manager.get_session(session_id)
+                if existing_session:
+                    logger.info(f"✅ Using existing session: {session_id[:8]}...")
+                    
+                    # Create a fresh ADK session for this interaction
+                    adk_session = await self.adk_session_service.create_session(
+                        app_name="YuhHearDem",
+                        user_id=user_id
+                    )
+                    
+                    return session_id, adk_session.id
+            
+            # Create new session
+            new_session = await self.session_manager.create_session(
+                user_id=user_id,
+                session_id=session_id,
+                metadata={"created_via": "parliamentary_system", "version": "3.5.0"}
+            )
+            
+            # Create corresponding ADK session
+            adk_session = await self.adk_session_service.create_session(
                 app_name="YuhHearDem",
                 user_id=user_id
             )
             
-            # Use the provided session_id for our tracking, ADK session_id for the runner
-            tracking_session_id = session_id or adk_session.id
-            
-            if tracking_session_id not in self.conversation_history:
-                self.conversation_history[tracking_session_id] = []
-                logger.info(f"✅ Created new session tracking: {tracking_session_id[:8]}...")
-            else:
-                logger.info(f"✅ Reusing conversation history for: {tracking_session_id[:8]}...")
-            
-            # Always return the fresh ADK session ID for the runner to use
-            return adk_session.id
+            logger.info(f"✅ Created new session: {new_session.session_id[:8]}...")
+            return new_session.session_id, adk_session.id
             
         except Exception as e:
             logger.error(f"Failed to create session: {e}")
             # Fallback to simple UUID
             fallback_id = str(uuid.uuid4())
             logger.warning(f"Using fallback session ID: {fallback_id[:8]}...")
-            return fallback_id
+            
+            # Still try to create ADK session
+            try:
+                adk_session = await self.adk_session_service.create_session(
+                    app_name="YuhHearDem",
+                    user_id=user_id
+                )
+                return fallback_id, adk_session.id
+            except:
+                return fallback_id, fallback_id
+    
+    async def build_conversation_context(self, session_id: str, max_messages: int = 6) -> str:
+        """Build conversation context from MongoDB stored messages."""
+        try:
+            # Get recent messages from MongoDB
+            messages = await self.session_manager.get_session_messages(session_id, limit=max_messages)
+            
+            if not messages:
+                return ""
+            
+            context = "\n\nRECENT CONVERSATION:\n"
+            for message in messages:
+                if message.role == "user":
+                    context += f"User: {message.content}\n"
+                elif message.role == "assistant":
+                    # Use truncated version for context
+                    assistant_preview = message.content[:200]
+                    context += f"Assistant: {assistant_preview}...\n\n"
+            
+            return context
+            
+        except Exception as e:
+            logger.error(f"Failed to build conversation context: {e}")
+            return ""
     
     async def process_query(self, query: str, user_id: str = "user", session_id: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
-        """Process a query through the enhanced parliamentary agent with JSON response parsing."""
+        """Process a query through the enhanced parliamentary agent with MongoDB session storage."""
         try:
             logger.info(f"🚀 Processing query: {query[:50]}...")
             
-            # Get or create session - this returns the ADK session ID
-            adk_session_id = await self.get_or_create_session(user_id, session_id)
-            
-            # Use the provided session_id for our tracking, or fall back to ADK session ID
-            tracking_session_id = session_id or adk_session_id
+            # Get or create session - returns both tracking session ID and ADK session ID
+            tracking_session_id, adk_session_id = await self.get_or_create_session(user_id, session_id)
             
             # Set current session context for tools
             self.current_session_id = tracking_session_id
@@ -1135,25 +1183,22 @@ Search for parliamentary information when asked about topics, ministers, debates
             # Get session graph
             session_graph = self.get_or_create_session_graph(tracking_session_id)
             
-            # Initialize conversation history for this session if needed
-            if tracking_session_id not in self.conversation_history:
-                self.conversation_history[tracking_session_id] = []
-            
-            # Build context from conversation history AND session graph
-            context = ""
-            session_history = self.conversation_history[tracking_session_id]
-            if session_history:
-                context = "\n\nRECENT CONVERSATION:\n"
-                for exchange in session_history[-3:]:
-                    context += f"User: {exchange['user']}\n"
-                    assistant_preview = exchange.get('assistant', '')[:200]
-                    context += f"Assistant: {assistant_preview}...\n\n"
+            # Build context from MongoDB conversation history AND session graph
+            context = await self.build_conversation_context(tracking_session_id)
             
             # Add session graph context
             if session_graph.edge_count > 0:
-                # Include the current graph for context
+                context += "\n\nCURRENT SESSION GRAPH:\n"
                 context += session_graph.get_turtle_dump()
                 context += "\n\n"
+            
+            # Store user message in MongoDB
+            await self.session_manager.add_message(
+                tracking_session_id,
+                "user",
+                query,
+                metadata={"timestamp": datetime.now(timezone.utc).isoformat()}
+            )
             
             # Create message with enhanced context
             full_query = f"{context}CURRENT QUESTION: {query}"
@@ -1196,15 +1241,18 @@ Search for parliamentary information when asked about topics, ministers, debates
                 message_id = f"msg-{int(datetime.utcnow().timestamp() * 1000)}"
                 html_response = convert_structured_response_to_html(structured_response, message_id)
                 
-                # Update conversation history with the original query and structured response
-                session_history.append({
-                    "user": query,
-                    "assistant": response_text  # Store original for context
-                })
-                
-                # Trim history if too long
-                if len(session_history) > 8:
-                    self.conversation_history[tracking_session_id] = session_history[-8:]
+                # Store assistant response in MongoDB
+                await self.session_manager.add_message(
+                    tracking_session_id,
+                    "assistant",
+                    response_text,  # Store original response for context
+                    metadata={
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "message_id": message_id,
+                        "response_type": "structured",
+                        "graph_stats": session_graph.get_stats()
+                    }
+                )
                 
                 # Clear session context
                 self.current_session_id = None
@@ -1238,15 +1286,17 @@ Search for parliamentary information when asked about topics, ministers, debates
                         link.replace_with(link.get_text())
                 html_response = str(soup)
                 
-                # Update conversation history
-                session_history.append({
-                    "user": query,
-                    "assistant": fallback_message
-                })
-                
-                # Trim history if too long
-                if len(session_history) > 8:
-                    self.conversation_history[tracking_session_id] = session_history[-8:]
+                # Store assistant response in MongoDB
+                await self.session_manager.add_message(
+                    tracking_session_id,
+                    "assistant",
+                    fallback_message,
+                    metadata={
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "response_type": "fallback_error",
+                        "graph_stats": session_graph.get_stats()
+                    }
+                )
                 
                 # Clear session context
                 self.current_session_id = None
@@ -1268,10 +1318,64 @@ Search for parliamentary information when asked about topics, ministers, debates
             
             return f"❌ Error processing query: {str(e)}", {"success": False}
     
+    async def get_session_history(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get session history from MongoDB."""
+        try:
+            messages = await self.session_manager.get_session_messages(session_id, limit)
+            return [
+                {
+                    "message_id": msg.message_id,
+                    "role": msg.role,
+                    "content": msg.content,
+                    "timestamp": msg.timestamp.isoformat(),
+                    "metadata": msg.metadata
+                }
+                for msg in messages
+            ]
+        except Exception as e:
+            logger.error(f"Failed to get session history: {e}")
+            return []
+    
+    async def get_user_sessions(self, user_id: str, limit: int = 10, include_archived: bool = False) -> List[Dict[str, Any]]:
+        """Get user's recent sessions from MongoDB."""
+        try:
+            sessions = await self.session_manager.get_user_sessions(user_id, limit, include_archived)
+            return [
+                {
+                    "session_id": session.session_id,
+                    "created_at": session.created_at.isoformat(),
+                    "last_updated": session.last_updated.isoformat(),
+                    "message_count": len(session.messages),
+                    "metadata": session.metadata,
+                    "archived": session.metadata.get("archived", False)
+                }
+                for session in sessions
+            ]
+        except Exception as e:
+            logger.error(f"Failed to get user sessions: {e}")
+            return []
+    
+    async def archive_session(self, session_id: str, reason: str = "User requested") -> bool:
+        """Archive a session instead of deleting for audit purposes."""
+        try:
+            # Archive in MongoDB
+            success = await self.session_manager.archive_session(session_id, reason)
+            
+            # Keep graph data in memory but mark it as archived
+            if session_id in self.session_graphs:
+                logger.info(f"🗃️ Session graph for {session_id[:8]} kept for audit purposes")
+            
+            return success
+        except Exception as e:
+            logger.error(f"Failed to archive session: {e}")
+            return False
+    
     def close(self):
         """Close system resources."""
         if hasattr(self, 'querier'):
             self.querier.close()
+        if hasattr(self, 'session_manager'):
+            self.session_manager.close()
 
 # Global system instance
 parliamentary_system = None
@@ -1289,12 +1393,12 @@ def create_system() -> ParliamentarySystem:
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
-    logger.info("🚀 Starting Enhanced Parliamentary Chatbot System...")
+    logger.info("🚀 Starting Enhanced Parliamentary Chatbot System with MongoDB Sessions...")
     
     global parliamentary_system
     try:
         parliamentary_system = create_system()
-        logger.info("✅ Enhanced Parliamentary System created successfully")
+        logger.info("✅ Enhanced Parliamentary System with MongoDB sessions created successfully")
     except Exception as e:
         logger.error(f"❌ Failed to create Parliamentary system: {e}")
         parliamentary_system = None
@@ -1311,8 +1415,8 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="Enhanced Parliamentary Research API",
-    description="AI-powered Parliamentary research system with robust JSON processing",
-    version="3.5.0",
+    description="AI-powered Parliamentary research system with MongoDB session persistence",
+    version="4.0.0",
     lifespan=lifespan
 )
 
@@ -1382,10 +1486,10 @@ async def root(request: Request):
 async def api_info():
     """API information endpoint."""
     return {
-        "message": "YuhHearDem - Enhanced Parliamentary Research API with Robust JSON Processing",
+        "message": "YuhHearDem - Enhanced Parliamentary Research API with MongoDB Session Storage",
         "status": "running",
-        "version": "3.5.0",
-        "features": ["robust_json_repair", "expandable_cards", "session_graph_persistence", "turtle_processing", "cumulative_memory"]
+        "version": "4.0.0",
+        "features": ["mongodb_sessions", "audit_compliant_archiving", "persistent_chat_history", "robust_json_repair", "expandable_cards", "session_graph_persistence", "turtle_processing", "cumulative_memory"]
     }
 
 @app.get("/health")
@@ -1398,25 +1502,86 @@ async def health_check():
         )
     
     try:
-        # Test database connection
+        # Test graph database connection
         parliamentary_system.querier.client.admin.command("ping", maxTimeMS=3000)
-        db_connected = True
+        graph_db_connected = True
     except Exception as e:
-        db_connected = False
+        graph_db_connected = False
     
-    total_conversations = sum(len(history) for history in parliamentary_system.conversation_history.values())
+    try:
+        # Test session database connection
+        parliamentary_system.session_manager.client.admin.command("ping", maxTimeMS=3000)
+        session_db_connected = True
+        
+        # Get session stats
+        session_stats = parliamentary_system.session_manager.get_session_stats()
+    except Exception as e:
+        session_db_connected = False
+        session_stats = {"error": str(e)}
+    
     total_graph_edges = sum(graph.edge_count for graph in parliamentary_system.session_graphs.values())
     
     return {
-        "status": "healthy" if db_connected else "degraded",
+        "status": "healthy" if (graph_db_connected and session_db_connected) else "degraded",
         "timestamp": datetime.utcnow().isoformat(),
-        "database_connected": db_connected,
-        "active_sessions": len(parliamentary_system.conversation_history),
-        "total_conversations": total_conversations,
-        "session_graphs": len(parliamentary_system.session_graphs),
+        "graph_database_connected": graph_db_connected,
+        "session_database_connected": session_db_connected,
+        "session_graphs_in_memory": len(parliamentary_system.session_graphs),
         "total_graph_edges": total_graph_edges,
-        "version": "3.5.0"
+        "session_stats": session_stats,
+        "version": "4.0.0"
     }
+
+@app.get("/session/{session_id}")
+async def get_session_info(session_id: str):
+    """Get session information and history."""
+    if not parliamentary_system:
+        raise HTTPException(status_code=503, detail="System not initialized")
+    
+    try:
+        # Get session from MongoDB
+        session = await parliamentary_system.session_manager.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Get graph stats if available
+        graph_stats = None
+        if session_id in parliamentary_system.session_graphs:
+            graph_stats = parliamentary_system.session_graphs[session_id].get_stats()
+        
+        return {
+            "session_id": session.session_id,
+            "user_id": session.user_id,
+            "created_at": session.created_at.isoformat(),
+            "last_updated": session.last_updated.isoformat(),
+            "message_count": len(session.messages),
+            "metadata": session.metadata,
+            "graph_stats": graph_stats
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get session info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/session/{session_id}/messages")
+async def get_session_messages(session_id: str, limit: int = 20):
+    """Get messages from a session."""
+    if not parliamentary_system:
+        raise HTTPException(status_code=503, detail="System not initialized")
+    
+    try:
+        messages = await parliamentary_system.get_session_history(session_id, limit)
+        return {
+            "session_id": session_id,
+            "messages": messages,
+            "count": len(messages)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get session messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/session/{session_id}/graph")
 async def get_session_graph(session_id: str):
@@ -1435,6 +1600,48 @@ async def get_session_graph(session_id: str):
         "turtle_data": turtle_data,
         "stats": session_graph.get_stats()
     }
+
+@app.get("/user/{user_id}/sessions")
+async def get_user_sessions(user_id: str, limit: int = 10, include_archived: bool = False):
+    """Get user's recent sessions."""
+    if not parliamentary_system:
+        raise HTTPException(status_code=503, detail="System not initialized")
+    
+    try:
+        sessions = await parliamentary_system.get_user_sessions(user_id, limit, include_archived)
+        return {
+            "user_id": user_id,
+            "sessions": sessions,
+            "count": len(sessions),
+            "include_archived": include_archived
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get user sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/session/{session_id}/archive")
+async def archive_session(session_id: str, reason: str = "User requested"):
+    """Archive a session for audit purposes instead of deleting."""
+    if not parliamentary_system:
+        raise HTTPException(status_code=503, detail="System not initialized")
+    
+    try:
+        success = await parliamentary_system.archive_session(session_id, reason)
+        if success:
+            return {
+                "message": f"Session {session_id} archived successfully for audit purposes",
+                "reason": reason,
+                "note": "Data preserved for compliance and audit requirements"
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to archive session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/query", response_model=QueryResponse)
 async def query_endpoint(request: QueryRequest):
@@ -1486,12 +1693,55 @@ async def query_stream(request: QueryRequest):
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
     )
 
+@app.get("/stats")
+async def get_system_stats():
+    """Get overall system statistics."""
+    if not parliamentary_system:
+        raise HTTPException(status_code=503, detail="System not initialized")
+    
+    try:
+        session_stats = parliamentary_system.session_manager.get_session_stats()
+        graph_stats = {
+            "active_session_graphs": len(parliamentary_system.session_graphs),
+            "total_graph_edges": sum(graph.edge_count for graph in parliamentary_system.session_graphs.values())
+        }
+        
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "version": "4.0.0",
+            "session_stats": session_stats,
+            "graph_stats": graph_stats
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get system stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/archive-old-sessions")
+async def archive_old_sessions(days_old: int = 365):
+    """Admin endpoint to archive old sessions for audit compliance."""
+    if not parliamentary_system:
+        raise HTTPException(status_code=503, detail="System not initialized")
+    
+    try:
+        archived_count = await parliamentary_system.session_manager.cleanup_old_sessions(days_old)
+        return {
+            "message": f"Archived {archived_count} sessions older than {days_old} days",
+            "archived_count": archived_count,
+            "note": "Sessions archived for audit compliance, not deleted",
+            "retention_policy": f"Sessions auto-archived after {days_old} days of inactivity"
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to archive old sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
-    logger.info("🚀 Starting Enhanced Parliamentary Chatbot with Robust JSON Processing")
+    logger.info("🚀 Starting Enhanced Parliamentary Chatbot with MongoDB Session Storage")
     logger.info(f"📡 Server will run on 0.0.0.0:{port}")
     logger.info("📋 Required: GOOGLE_API_KEY, MONGODB_CONNECTION_STRING")
-    logger.info("🔧 New: Automatic JSON repair with json-repair library")
+    logger.info("🔧 New: MongoDB persistent session storage with audit-compliant archiving")
     
     uvicorn.run(
         "yuhheardem_chatbot:app",
