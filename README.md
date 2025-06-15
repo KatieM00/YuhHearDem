@@ -138,7 +138,6 @@ It began as a learning project for Katie and became a powerful civic tool.
 
 * Index Prime Minister's Office and government bills
 * Real-time tracking of political stances across sessions
-* Launch a public mobile-friendly version
 
 ---
 
