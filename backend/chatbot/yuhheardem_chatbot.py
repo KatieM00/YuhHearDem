@@ -1121,7 +1121,7 @@ Search for parliamentary information when asked about topics, ministers, debates
     
     def visualize_session_graph(self, session_id: str = None, max_nodes: int = 100) -> str:
         """
-        Visualize the current session graph as an interactive network.
+        Visualize the current session graph as an interactive network with better connectivity.
         
         Args:
             session_id: Session to visualize (uses current if None)
@@ -1145,9 +1145,10 @@ Search for parliamentary information when asked about topics, ministers, debates
             
             # Extract all nodes and their metadata from the RDF graph
             nodes_data = {}
-            edges = []
+            all_edges = []
+            node_connections = {}  # Track connection counts for each node
             
-            # First pass: collect all node URIs and find their labels
+            # First pass: collect all node URIs, properties, and count connections
             for subject, predicate, obj in session_graph.graph:
                 subj_uri = str(subject)
                 pred_uri = str(predicate)
@@ -1161,7 +1162,8 @@ Search for parliamentary information when asked about topics, ministers, debates
                         "label": None,
                         "name": None,
                         "type": None,
-                        "properties": {}
+                        "properties": {},
+                        "connection_count": 0
                     }
                 
                 if obj_uri and obj_uri not in nodes_data:
@@ -1171,33 +1173,87 @@ Search for parliamentary information when asked about topics, ministers, debates
                         "label": None,
                         "name": None,
                         "type": None,
-                        "properties": {}
+                        "properties": {},
+                        "connection_count": 0
                     }
                 
                 # Collect properties for subject node
-                if pred_uri.endswith("/label") or pred_uri.endswith("#label"):
+                if pred_uri.endswith("/label") or pred_uri.endswith("#label") or "label" in pred_uri.lower():
                     nodes_data[subj_uri]["label"] = str(obj)
-                elif pred_uri.endswith("/name") or pred_uri.endswith("#name"):
+                elif pred_uri.endswith("/name") or pred_uri.endswith("#name") or "name" in pred_uri.lower():
                     nodes_data[subj_uri]["name"] = str(obj)
-                elif pred_uri.endswith("/type") or pred_uri.endswith("#type"):
+                elif pred_uri.endswith("/type") or pred_uri.endswith("#type") or "type" in pred_uri.lower():
                     nodes_data[subj_uri]["type"] = str(obj)
                 else:
                     # Store other properties
                     prop_name = self._extract_display_name(pred_uri)
                     nodes_data[subj_uri]["properties"][prop_name] = str(obj)
                 
-                # Add edge if both nodes are URIs
+                # Count connections (both incoming and outgoing)
                 if obj_uri:
-                    edges.append({
+                    nodes_data[subj_uri]["connection_count"] += 1
+                    nodes_data[obj_uri]["connection_count"] += 1
+                    
+                    all_edges.append({
+                        "source_uri": subj_uri,
+                        "target_uri": obj_uri,
                         "source": self._extract_display_name(subj_uri),
                         "target": self._extract_display_name(obj_uri),
                         "label": self._extract_display_name(pred_uri),
                         "predicate": pred_uri
                     })
             
-            # Convert to final node format with rich labels
-            nodes = []
+            # Calculate node importance score combining properties and connections
             for uri, node_data in nodes_data.items():
+                property_score = len(node_data["properties"]) * 2  # Properties are valuable
+                connection_score = node_data["connection_count"]   # Connections show importance
+                node_data["importance_score"] = property_score + connection_score
+            
+            # Smart node selection: prioritize connected nodes and important hubs
+            all_nodes = list(nodes_data.values())
+            
+            # Sort by importance score (properties + connections)
+            all_nodes.sort(key=lambda x: x["importance_score"], reverse=True)
+            
+            if len(all_nodes) <= max_nodes:
+                # If we can show all nodes, do it
+                selected_nodes = all_nodes
+            else:
+                # Smart selection: ensure we keep well-connected nodes
+                selected_nodes = []
+                selected_uris = set()
+                
+                # First, take the most important nodes
+                for node in all_nodes[:max_nodes // 2]:
+                    selected_nodes.append(node)
+                    selected_uris.add(node["uri"])
+                
+                # Then, add nodes that connect to already selected nodes
+                remaining_budget = max_nodes - len(selected_nodes)
+                connection_candidates = []
+                
+                for edge in all_edges:
+                    # If one end is selected but the other isn't, consider the unselected one
+                    if edge["source_uri"] in selected_uris and edge["target_uri"] not in selected_uris:
+                        target_node = nodes_data[edge["target_uri"]]
+                        if target_node not in connection_candidates:
+                            connection_candidates.append(target_node)
+                    elif edge["target_uri"] in selected_uris and edge["source_uri"] not in selected_uris:
+                        source_node = nodes_data[edge["source_uri"]]
+                        if source_node not in connection_candidates:
+                            connection_candidates.append(source_node)
+                
+                # Sort connection candidates by importance and add the best ones
+                connection_candidates.sort(key=lambda x: x["importance_score"], reverse=True)
+                
+                for node in connection_candidates[:remaining_budget]:
+                    if node not in selected_nodes:
+                        selected_nodes.append(node)
+                        selected_uris.add(node["uri"])
+            
+            # Convert to final node format with rich labels
+            final_nodes = []
+            for node_data in selected_nodes:
                 # Determine the best display label
                 display_label = (
                     node_data["label"] or 
@@ -1206,33 +1262,42 @@ Search for parliamentary information when asked about topics, ministers, debates
                 )
                 
                 # Clean up the label (remove quotes, limit length)
-                if display_label.startswith('"') and display_label.endswith('"'):
+                if display_label and display_label.startswith('"') and display_label.endswith('"'):
                     display_label = display_label[1:-1]
                 
                 # Truncate very long labels
-                if len(display_label) > 50:
+                if display_label and len(display_label) > 50:
                     display_label = display_label[:47] + "..."
                 
                 node = {
                     "id": node_data["id"],
-                    "uri": uri,
-                    "label": display_label,
+                    "uri": node_data["uri"],
+                    "label": display_label or node_data["id"],
                     "original_label": node_data["label"],
                     "name": node_data["name"],
                     "type": node_data["type"],
-                    "properties": node_data["properties"]
+                    "properties": node_data["properties"],
+                    "connection_count": node_data["connection_count"],
+                    "importance_score": node_data["importance_score"]
                 }
-                nodes.append(node)
+                final_nodes.append(node)
             
-            # Sort by importance (nodes with more properties first)
-            nodes.sort(key=lambda x: len(x["properties"]), reverse=True)
+            # Filter edges to only include selected nodes
+            selected_node_ids = {node["id"] for node in final_nodes}
+            final_edges = [
+                edge for edge in all_edges 
+                if edge["source"] in selected_node_ids and edge["target"] in selected_node_ids
+            ]
             
-            # Limit nodes for performance but keep more
-            if len(nodes) > max_nodes:
-                nodes = nodes[:max_nodes]
-                # Filter edges to only include remaining nodes
-                node_ids = {node["id"] for node in nodes}
-                edges = [edge for edge in edges if edge["source"] in node_ids and edge["target"] in node_ids]
+            # Remove duplicate edges (can happen with bidirectional relationships)
+            unique_edges = []
+            seen_edges = set()
+            for edge in final_edges:
+                # Create a normalized edge key for deduplication
+                edge_key = tuple(sorted([edge["source"], edge["target"]]) + [edge["predicate"]])
+                if edge_key not in seen_edges:
+                    seen_edges.add(edge_key)
+                    unique_edges.append(edge)
             
             # Load and render template
             from jinja2 import Environment, FileSystemLoader
@@ -1240,12 +1305,14 @@ Search for parliamentary information when asked about topics, ministers, debates
             template = env.get_template('graph_visualization.html')
             
             html_content = template.render(
-                nodes=nodes,
-                edges=edges,
+                nodes=final_nodes,
+                edges=unique_edges,
                 stats=session_graph.get_stats()
             )
             
-            logger.info(f"📊 Generated graph visualization: {len(nodes)} nodes, {len(edges)} edges")
+            logger.info(f"📊 Generated graph visualization: {len(final_nodes)} nodes, {len(unique_edges)} edges")
+            logger.info(f"📊 Node selection: {len(selected_nodes)} selected from {len(all_nodes)} total")
+            
             return html_content
             
         except Exception as e:
