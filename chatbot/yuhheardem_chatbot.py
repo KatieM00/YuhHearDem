@@ -279,7 +279,7 @@ class ParliamentaryGraphQuerier:
             logger.error(f"❌ Failed to load embedding model: {e}")
             raise RuntimeError(f"Vector search failed to initialize: {e}")
 
-    def unified_hybrid_search(self, query: str, limit: int = 8) -> List[Dict]:
+    def unified_hybrid_search(self, query: str, limit: int = 20) -> List[Dict]:
         """
         Performs both node vector search and statement text search,
         then intelligently combines and weights the results.
@@ -864,10 +864,178 @@ class ParliamentaryGraphQuerier:
         except:
             return "0:00"
     
-    def get_structured_search_results(self, query: str, limit: int = 8, hops: int = 2) -> Dict[str, Any]:
-        """Get search results as structured JSON with focused, relevant data."""
+    def _find_bridge_connections(self, nodes_data: Dict, existing_edges: List[Dict]) -> List[Dict]:
+        """Find bridge connections to link disconnected clusters."""
+        try:
+            # Build connectivity graph
+            connected_components = self._find_connected_components(nodes_data, existing_edges)
+            
+            if len(connected_components) <= 1:
+                return []  # Already connected
+            
+            # Find potential bridge entities by searching for shared contexts
+            bridge_edges = []
+            entity_ids = list(nodes_data.keys())
+            
+            # Look for entities that could bridge clusters based on name similarity
+            bridge_candidates = []
+            for comp1_idx, comp1 in enumerate(connected_components):
+                for comp2_idx, comp2 in enumerate(connected_components):
+                    if comp1_idx >= comp2_idx:
+                        continue
+                    
+                    # Look for semantic bridges between clusters
+                    for entity1 in comp1:
+                        for entity2 in comp2:
+                            # Check if they're related by name/type
+                            node1 = nodes_data[entity1]
+                            node2 = nodes_data[entity2]
+                            
+                            # Government/Ministry connections
+                            if self._are_government_related(node1, node2):
+                                bridge_edges.append({
+                                    "source_uri": entity1,
+                                    "target_uri": entity2,
+                                    "source": entity1,
+                                    "target": entity2,
+                                    "label": "government connection",
+                                    "predicate": "government_related",
+                                    "strength": 5,
+                                    "bridge": True
+                                })
+                            
+                            # Policy domain connections
+                            elif self._are_policy_related(node1, node2):
+                                bridge_edges.append({
+                                    "source_uri": entity1,
+                                    "target_uri": entity2,
+                                    "source": entity1,
+                                    "target": entity2,
+                                    "label": "policy connection",
+                                    "predicate": "policy_related",
+                                    "strength": 4,
+                                    "bridge": True
+                                })
+            
+            return bridge_edges[:10]  # Limit bridge connections
+            
+        except Exception as e:
+            logger.warning(f"Error finding bridge connections: {e}")
+            return []
+    
+    def _find_connected_components(self, nodes_data: Dict, edges: List[Dict]) -> List[List[str]]:
+        """Find connected components in the graph."""
+        visited = set()
+        components = []
+        
+        # Build adjacency list
+        adj_list = {node_id: [] for node_id in nodes_data.keys()}
+        for edge in edges:
+            source = edge.get("source")
+            target = edge.get("target")
+            if source in adj_list and target in adj_list:
+                adj_list[source].append(target)
+                adj_list[target].append(source)
+        
+        # DFS to find components
+        def dfs(node, component):
+            visited.add(node)
+            component.append(node)
+            for neighbor in adj_list.get(node, []):
+                if neighbor not in visited:
+                    dfs(neighbor, component)
+        
+        for node_id in nodes_data.keys():
+            if node_id not in visited:
+                component = []
+                dfs(node_id, component)
+                if component:
+                    components.append(component)
+        
+        return components
+    
+    def _are_government_related(self, node1: Dict, node2: Dict) -> bool:
+        """Check if two nodes are government-related."""
+        gov_terms = ["ministry", "minister", "government", "parliament", "mp", "senator"]
+        
+        name1 = (node1.get("name", "") + " " + node1.get("type", "")).lower()
+        name2 = (node2.get("name", "") + " " + node2.get("type", "")).lower()
+        
+        gov1 = any(term in name1 for term in gov_terms)
+        gov2 = any(term in name2 for term in gov_terms)
+        
+        return gov1 and gov2
+    
+    def _are_policy_related(self, node1: Dict, node2: Dict) -> bool:
+        """Check if two nodes are policy-related."""
+        policy_terms = ["policy", "health", "education", "housing", "welfare", "economic"]
+        
+        name1 = (node1.get("name", "") + " " + node1.get("description", "")).lower()
+        name2 = (node2.get("name", "") + " " + node2.get("description", "")).lower()
+        
+        for term in policy_terms:
+            if term in name1 and term in name2:
+                return True
+        
+        return False
+    
+    def _detect_temporal_intent(self, query: str) -> Dict[str, Any]:
+        """Detect if user is asking for recent/temporal information."""
+        temporal_keywords = [
+            "recent", "recently", "latest", "current", "now", "today", 
+            "this year", "2024", "2025", "new", "modern", "contemporary"
+        ]
+        
+        query_lower = query.lower()
+        temporal_detected = any(keyword in query_lower for keyword in temporal_keywords)
+        
+        # Define "recent" as 1 year
+        from datetime import datetime, timedelta
+        recent_threshold = datetime.now() - timedelta(days=365)
+        
+        return {
+            "is_temporal_query": temporal_detected,
+            "recent_threshold": recent_threshold,
+            "detected_keywords": [kw for kw in temporal_keywords if kw in query_lower]
+        }
+    
+    def _calculate_recency_boost(self, video_published_date: str, recent_threshold: datetime) -> float:
+        """Calculate boost factor based on video published date."""
+        if not video_published_date:
+            return 1.0
+        
+        try:
+            from datetime import datetime
+            # Parse the published date
+            if isinstance(video_published_date, str):
+                # Handle different date formats
+                pub_date = datetime.fromisoformat(video_published_date.replace('Z', '+00:00'))
+            else:
+                pub_date = video_published_date
+            
+            # Calculate days since publication
+            days_old = (datetime.now() - pub_date.replace(tzinfo=None)).days
+            
+            if days_old < 0:  # Future date, shouldn't happen but handle gracefully
+                return 1.0
+            
+            # Apply exponential decay: 3x boost for very recent, decaying over 1 year
+            import math
+            boost = max(1.0, 3.0 * math.exp(-days_old / 365))
+            return boost
+            
+        except Exception as e:
+            logger.warning(f"Error calculating recency boost: {e}")
+            return 1.0
+
+    def get_structured_search_results(self, query: str, limit: int = 20, hops: int = 2) -> Dict[str, Any]:
+        """Get search results as structured JSON with focused, relevant data and temporal awareness."""
         try:
             logger.info(f"🔍 Structured search for: '{query}'")
+            
+            # Detect temporal intent
+            temporal_analysis = self._detect_temporal_intent(query)
+            logger.info(f"🕒 Temporal intent: {temporal_analysis}")
             
             # Perform hybrid search to get the most relevant initial results
             search_results = self.unified_hybrid_search(query, limit)
@@ -881,7 +1049,7 @@ class ParliamentaryGraphQuerier:
                 }
             
             # Get only the top search result entity IDs (much more selective)
-            seed_entity_ids = {result["uri"] for result in search_results[:limit] if "uri" in result}
+            seed_entity_ids = {result["uri"] for result in search_results[:min(limit*2, 40)] if "uri" in result}  # Use more seeds
             logger.info(f"Starting with {len(seed_entity_ids)} seed entities")
             
             # Get entities data for seeds only
@@ -905,17 +1073,17 @@ class ParliamentaryGraphQuerier:
                             {"source_entity_id": {"$in": list(seed_entity_ids)}},
                             {"target_entity_id": {"$in": list(seed_entity_ids)}}
                         ],
-                        "relationship_strength": {"$gte": 7}  # Only high-confidence relationships
+                        "relationship_strength": {"$gte": 5}  # Medium to high-confidence relationships
                     }
                 },
                 {"$sort": {"relationship_strength": -1, "extracted_at": -1}},
-                {"$limit": 30}  # Much smaller limit
+                {"$limit": 150}  # Allow many more statements for richer context
             ]
             
             statements_data = list(self.statements.aggregate(statements_pipeline))
             
             # If we need more context and hops > 1, get 1-hop neighbors selectively
-            if hops > 1 and len(statements_data) < 15:
+            if hops > 1 and len(statements_data) < 80:
                 # Get entities connected to our seeds through high-strength relationships
                 connected_entity_ids = set()
                 for stmt in statements_data:
@@ -949,7 +1117,7 @@ class ParliamentaryGraphQuerier:
                                 {"source_entity_id": {"$in": connected_entity_ids}},
                                 {"target_entity_id": {"$in": connected_entity_ids}}
                             ],
-                            "relationship_strength": {"$gte": 8}  # Even higher threshold for 2nd hop
+                            "relationship_strength": {"$gte": 6}  # Reasonable threshold for 2nd hop
                         },
                         {
                             "_id": 1,
@@ -960,14 +1128,14 @@ class ParliamentaryGraphQuerier:
                             "provenance_segment_id": 1,
                             "extracted_at": 1
                         }
-                    ).sort("relationship_strength", -1).limit(15))
+                    ).sort("relationship_strength", -1).limit(80))
                     
                     statements_data.extend(additional_statements)
             
             # Collect unique segment IDs for provenance lookup (limit to top statements)
             top_statements = sorted(statements_data, 
                                   key=lambda x: x.get("relationship_strength", 0), 
-                                  reverse=True)[:25]
+                                  reverse=True)[:120]
             
             segment_ids = list(set(
                 stmt.get("provenance_segment_id") 
@@ -978,8 +1146,12 @@ class ParliamentaryGraphQuerier:
             # Get provenance details only for the most relevant segments
             provenance_details = self.get_provenance_details(segment_ids[:15])
             
-            # Enhance statements with provenance info
+            # Enhance statements with provenance info and temporal scoring
             enhanced_statements = []
+            recent_count = 0
+            total_count = 0
+            date_range = {"newest": None, "oldest": None}
+            
             for stmt in statements_data:
                 segment_id = stmt.get("provenance_segment_id")
                 enhanced_stmt = {
@@ -992,27 +1164,90 @@ class ParliamentaryGraphQuerier:
                     "extracted_at": stmt.get("extracted_at")
                 }
                 
-                # Add provenance details only for top statements
+                # Add provenance details and calculate temporal scores
                 if segment_id and segment_id in provenance_details:
-                    enhanced_stmt["provenance"] = provenance_details[segment_id]
+                    provenance = provenance_details[segment_id]
+                    enhanced_stmt["provenance"] = provenance
+                    
+                    # Get video published date for temporal scoring
+                    video_date = None
+                    if "upload_date" in provenance and provenance["upload_date"]:
+                        video_date = provenance["upload_date"]
+                    elif "video_title" in provenance:
+                        # Try to extract date from video title if available
+                        video_title = provenance["video_title"]
+                        import re
+                        # Look for dates in title like "Tuesday 17th March" or "2020", "2025"
+                        date_match = re.search(r'(2020|2021|2022|2023|2024|2025)', video_title)
+                        if date_match:
+                            year = date_match.group(1)
+                            # Create approximate date (mid-year if no specific date)
+                            video_date = f"{year}-06-15"
+                    
+                    # Calculate temporal boost - always apply, but stronger for explicit temporal queries
+                    temporal_boost = 1.0
+                    if video_date:
+                        base_boost = self._calculate_recency_boost(video_date, temporal_analysis["recent_threshold"])
+                        if temporal_analysis["is_temporal_query"]:
+                            # Full boost for explicit temporal queries
+                            temporal_boost = base_boost
+                        else:
+                            # Lighter boost for all queries (1.0 to 1.5x range)
+                            temporal_boost = 1.0 + (base_boost - 1.0) * 0.5
+                        
+                        # Track recent vs total content
+                        total_count += 1
+                        if temporal_boost > 1.5:  # Significantly boosted = recent
+                            recent_count += 1
+                        
+                        # Track date range
+                        if video_date:
+                            if not date_range["newest"] or video_date > date_range["newest"]:
+                                date_range["newest"] = video_date
+                            if not date_range["oldest"] or video_date < date_range["oldest"]:
+                                date_range["oldest"] = video_date
+                    
+                    # Apply temporal boost to relationship strength
+                    enhanced_stmt["temporal_boost"] = temporal_boost
+                    enhanced_stmt["boosted_strength"] = enhanced_stmt["relationship_strength"] * temporal_boost
+                    enhanced_stmt["video_date"] = video_date
                 
                 enhanced_statements.append(enhanced_stmt)
             
-            # Sort by relevance and recency, then limit
+            # Always sort by temporal-boosted relevance (but lighter boost for non-temporal queries)
             enhanced_statements.sort(
                 key=lambda x: (
-                    x.get("relationship_strength", 0),
+                    x.get("boosted_strength", x.get("relationship_strength", 0)),
+                    x.get("temporal_boost", 1.0),
                     x.get("extracted_at", "")
                 ), 
                 reverse=True
             )
+            
+            if temporal_analysis["is_temporal_query"]:
+                logger.info(f"🕒 Full temporal sorting applied with {recent_count}/{total_count} recent results")
+            else:
+                logger.info(f"🕒 Light temporal boost applied with {recent_count}/{total_count} recent results")
+            
             enhanced_statements = enhanced_statements[:25]  # Much smaller limit
+            
+            # Build temporal metadata for the LLM
+            temporal_metadata = {
+                "query_requested_recent": temporal_analysis["is_temporal_query"],
+                "recent_content_found": recent_count,
+                "total_content_found": total_count,
+                "recent_threshold": temporal_analysis["recent_threshold"].isoformat() if temporal_analysis["recent_threshold"] else None,
+                "newest_content_date": date_range["newest"],
+                "oldest_content_date": date_range["oldest"],
+                "detected_keywords": temporal_analysis["detected_keywords"]
+            }
             
             result = {
                 "query": query,
                 "entities": entities_data[:20],  # Limit entities too
                 "statements": enhanced_statements,
                 "provenance": provenance_details,
+                "temporal_analysis": temporal_metadata,
                 "summary": f"Found {len(entities_data)} entities and {len(enhanced_statements)} high-relevance statements",
                 "search_metadata": {
                     "total_entities": len(entities_data),
@@ -1020,7 +1255,7 @@ class ParliamentaryGraphQuerier:
                     "provenance_segments": len(provenance_details),
                     "hops": hops,
                     "limit": limit,
-                    "optimization": "focused_high_strength"
+                    "optimization": "focused_high_strength_temporal"
                 }
             }
             
@@ -1245,7 +1480,7 @@ class ParliamentarySystem:
         self.current_session_id = None
         
         # Create enhanced search tools with session context
-        def search_parliament_hybrid(query: str, hops: int = 1, limit: int = 3) -> str:
+        def search_parliament_hybrid(query: str, hops: int = 1, limit: int = 8) -> str:
             """
             Search parliamentary records using structured search with full provenance details.
             
@@ -1534,6 +1769,12 @@ Search for parliamentary information when asked about topics, ministers, debates
             
             if missing_entities:
                 logger.info(f"Created {len(missing_entities)} missing entities: {list(missing_entities)[:5]}...")
+            
+            # Find and add bridge connections to link disconnected clusters
+            bridge_edges = self.querier._find_bridge_connections(nodes_data, all_edges)
+            if bridge_edges:
+                logger.info(f"🌉 Found {len(bridge_edges)} bridge connections to link clusters")
+                all_edges.extend(bridge_edges)
             
             # Calculate node importance score combining properties and connections
             for uri, node_data in nodes_data.items():
