@@ -356,16 +356,14 @@ Example: `UU2CifSWj5Q_240_0 Also commanded to lay the 2023-2030 National Policy.
     def setup_vector_index(self):
         """Create Atlas Vector Search index on entities collection."""
         try:
-            # Check if we're on Atlas and can use vector search
+            # Check if we can access the search indexes API (Atlas only)
             try:
-                # Test if we can access the search indexes API (Atlas only)
                 search_indexes = list(self.entities.list_search_indexes())
                 self.atlas_vector_search_available = True
                 print("✅ MongoDB Atlas detected - vector search available")
-            except Exception:
-                self.atlas_vector_search_available = False
-                print("📦 Local MongoDB detected - using manual similarity search")
-                return
+            except Exception as e:
+                print(f"❌ Error: Cannot access Atlas search indexes: {e}")
+                raise Exception("This script requires MongoDB Atlas with vector search capabilities")
             
             # Check if vector search index already exists
             vector_index_exists = False
@@ -378,34 +376,39 @@ Example: `UU2CifSWj5Q_240_0 Also commanded to lay the 2023-2030 National Policy.
             if not vector_index_exists:
                 print("🔄 Creating Atlas vector search index on entities...")
                 
-                # Create the vector search index definition
+                # Updated vector search index definition for newer Atlas API
                 vector_index_definition = {
-                    "fields": [
-                        {
-                            "type": "vector",
-                            "path": "name_description_embedding",
-                            "numDimensions": 384,  # all-MiniLM-L6-v2 embedding size
-                            "similarity": "cosine"
-                        },
-                        {
-                            "type": "filter",
-                            "path": "entity_type"
+                    "mappings": {
+                        "dynamic": False,
+                        "fields": {
+                            "name_description_embedding": {
+                                "type": "knnVector",
+                                "dimensions": 384,
+                                "similarity": "cosine"
+                            },
+                            "entity_type": {
+                                "type": "token"
+                            }
                         }
-                    ]
+                    }
                 }
                 
                 # Create the index
-                self.entities.create_search_index(
-                    model={
-                        "name": "entity_vector_index",
-                        "definition": vector_index_definition
-                    }
-                )
-                print("✅ Atlas vector search index created (may take a few minutes to build)")
+                try:
+                    self.entities.create_search_index(
+                        {
+                            "name": "entity_vector_index",
+                            "definition": vector_index_definition
+                        }
+                    )
+                    print("✅ Atlas vector search index created (may take a few minutes to build)")
+                except Exception as create_error:
+                    print(f"❌ Error: Could not create vector search index: {create_error}")
+                    raise
             
         except Exception as e:
-            print(f"⚠️  Warning: Could not create Atlas vector search index: {e}")
-            self.atlas_vector_search_available = False
+            print(f"❌ Error: Could not setup Atlas vector search: {e}")
+            raise
 
     def normalize_entity_name(self, name: str) -> str:
         """Normalize entity name for comparison."""
@@ -494,7 +497,7 @@ Example: `UU2CifSWj5Q_240_0 Also commanded to lay the 2023-2030 National Policy.
             return []
 
     def find_similar_entities(self, entity: Dict, similarity_threshold: float = 0.85) -> List[Dict]:
-        """Find existing entities similar to the new one using Atlas Vector Search or manual fallback."""
+        """Find existing entities similar to the new one using Atlas Vector Search."""
         if not self.embedding_model:
             return []
         
@@ -508,11 +511,8 @@ Example: `UU2CifSWj5Q_240_0 Also commanded to lay the 2023-2030 National Policy.
             if not new_embedding:
                 return []
             
-            # Use Atlas Vector Search if available (much faster)
-            if getattr(self, 'atlas_vector_search_available', False):
-                return self._atlas_vector_search(entity_type, new_embedding, similarity_threshold)
-            else:
-                return self._manual_similarity_search(entity_type, new_embedding, similarity_threshold)
+            # Use Atlas Vector Search
+            return self._atlas_vector_search(entity_type, new_embedding, similarity_threshold)
                 
         except Exception as e:
             print(f"⚠️  Warning: Error in similarity search: {e}")
@@ -556,49 +556,9 @@ Example: `UU2CifSWj5Q_240_0 Also commanded to lay the 2023-2030 National Policy.
             return results[:5]  # Return top 5
             
         except Exception as e:
-            print(f"⚠️  Warning: Atlas Vector Search failed, falling back to manual: {e}")
-            return self._manual_similarity_search(entity_type, new_embedding, similarity_threshold)
-
-    def _manual_similarity_search(self, entity_type: str, new_embedding: List[float], similarity_threshold: float) -> List[Dict]:
-        """Manual similarity search fallback (slower but works everywhere)."""
-        try:
-            # Optimized query: only get entities with embeddings and limit results
-            existing_entities = list(self.entities.find({
-                "entity_type": entity_type,
-                "name_description_embedding": {"$exists": True, "$ne": None}
-            }).limit(50))  # Limit to 50 most recent entities to speed up search
-            
-            if not existing_entities:
-                return []
-            
-            similar_entities = []
-            
-            for existing_entity in existing_entities:
-                existing_embedding = existing_entity.get("name_description_embedding")
-                if not existing_embedding or len(existing_embedding) != len(new_embedding):
-                    continue
-                
-                try:
-                    # Calculate cosine similarity
-                    similarity = np.dot(new_embedding, existing_embedding) / (
-                        np.linalg.norm(new_embedding) * np.linalg.norm(existing_embedding)
-                    )
-                    
-                    if similarity >= similarity_threshold:
-                        existing_entity["similarity_score"] = float(similarity)
-                        similar_entities.append(existing_entity)
-                except Exception as sim_error:
-                    print(f"⚠️  Warning: Error calculating similarity for {existing_entity.get('entity_name', 'unknown')}: {sim_error}")
-                    continue
-            
-            # Sort by similarity score descending
-            similar_entities.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
-            
-            return similar_entities[:5]  # Return top 5 most similar
-            
-        except Exception as e:
-            print(f"⚠️  Warning: Error in manual similarity search: {e}")
+            print(f"⚠️  Warning: Atlas Vector Search failed: {e}")
             return []
+
 
     def fetch_entity_subgraph(self, entity_id: str) -> Dict:
         """Fetch entity and its immediate relationships + 1-hop entities - optimized."""
@@ -704,8 +664,176 @@ I need you to determine if these two entities represent the same real-world enti
             print(f"      ⚠️  Warning: Error in entity disambiguation LLM call: {e}")
             return False
 
-    def disambiguate_batch_entities(self, batch_entities: List[Dict], 
-                                  batch_statements: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
+    def deduplicate_all_entities(self, all_entities: List[Dict], all_statements: List[Dict], video_id: str) -> Tuple[List[Dict], List[Dict]]:
+        """Deduplicate entities across all batches and fix statements accordingly."""
+        start_time = time.time()
+        print(f"      🔍 Cross-batch deduplication starting...")
+        
+        # Step 1: Create a master entity dictionary (entity_id -> entity)
+        entity_dict = {}
+        for entity in all_entities:
+            entity_id = entity["entity_id"]
+            if entity_id not in entity_dict:
+                entity_dict[entity_id] = entity
+            # Keep the first occurrence of each entity_id
+        
+        unique_entities = list(entity_dict.values())
+        intra_batch_reduction = len(all_entities) - len(unique_entities)
+        
+        if intra_batch_reduction > 0:
+            print(f"      📊 Intra-batch deduplication: removed {intra_batch_reduction} duplicate entity_ids")
+        
+        # Step 2: Now do inter-batch entity disambiguation 
+        # (same entity across batches but with different entity_ids)
+        print(f"      🔍 Inter-batch disambiguation of {len(unique_entities)} unique entities...")
+        
+        final_entities = []
+        entity_mappings = {}  # old_entity_id -> canonical_entity_id
+        
+        # Statistics for optimization tracking
+        exact_matches = 0
+        high_similarity_matches = 0
+        llm_disambiguations = 0
+        
+        for i, entity in enumerate(unique_entities):
+            if i % 50 == 0 and i > 0:  # Progress indicator
+                print(f"        📊 Processed {i}/{len(unique_entities)} entities...")
+            
+            entity_start = time.time()
+            merged = False
+            original_entity_id = entity["entity_id"]
+            
+            # Step 2a: Check against existing entities in MongoDB (from previous videos)
+            try:
+                exact_start = time.time()
+                exact_match_entities = self.find_exact_match_entities(entity)
+                exact_time = time.time() - exact_start
+                
+                if exact_match_entities:
+                    # Merge with existing MongoDB entity
+                    existing_entity = exact_match_entities[0]
+                    existing_entity_id = existing_entity["entity_id"]
+                    
+                    print(f"        🎯 Exact match with DB ({exact_time:.3f}s): '{entity['entity_name']}' → '{existing_entity['entity_name']}'")
+                    
+                    entity_mappings[original_entity_id] = existing_entity_id
+                    exact_matches += 1
+                    merged = True
+            except Exception as e:
+                print(f"⚠️  Warning: Error in exact match for '{entity.get('entity_name', 'unknown')}': {e}")
+            
+            # Step 2b: If no exact match with DB, check similarity with DB
+            if not merged and self.embedding_model:
+                try:
+                    similarity_start = time.time()
+                    similar_entities = self.find_similar_entities(entity, similarity_threshold=0.85)
+                    similarity_time = time.time() - similarity_start
+                    
+                    if similar_entities:
+                        best_match = similar_entities[0]
+                        similarity_score = best_match.get("similarity_score", 0)
+                        
+                        # Auto-merge for very high similarity (>= 0.95)
+                        if similarity_score >= 0.95:
+                            existing_entity_id = best_match["entity_id"]
+                            
+                            print(f"        ⚡ High similarity with DB ({similarity_score:.3f}): '{entity['entity_name']}' → '{best_match['entity_name']}'")
+                            
+                            entity_mappings[original_entity_id] = existing_entity_id
+                            high_similarity_matches += 1
+                            merged = True
+                        
+                        # Use LLM for medium similarity (0.85-0.95)
+                        elif similarity_score >= 0.85:
+                            try:
+                                llm_start = time.time()
+                                existing_subgraph = self.fetch_entity_subgraph(best_match["entity_id"])
+                                
+                                if self.are_entities_same(existing_subgraph, entity, all_statements):
+                                    existing_entity_id = best_match["entity_id"]
+                                    
+                                    llm_time = time.time() - llm_start
+                                    print(f"        🤖 LLM confirmed with DB ({llm_time:.3f}s, {similarity_score:.3f}): '{entity['entity_name']}' → '{best_match['entity_name']}'")
+                                    
+                                    entity_mappings[original_entity_id] = existing_entity_id
+                                    llm_disambiguations += 1
+                                    merged = True
+                            except Exception as e:
+                                print(f"⚠️  Warning: Error in LLM disambiguation: {e}")
+                except Exception as e:
+                    print(f"⚠️  Warning: Error in similarity search: {e}")
+            
+            # Step 2c: If no match with DB, check against other entities in this video's final list
+            if not merged:
+                for existing_final_entity in final_entities:
+                    try:
+                        if self.is_exact_match(entity, existing_final_entity):
+                            print(f"        🎯 Exact match within video: '{entity['entity_name']}' → '{existing_final_entity['entity_name']}'")
+                            entity_mappings[original_entity_id] = existing_final_entity["entity_id"]
+                            exact_matches += 1
+                            merged = True
+                            break
+                    except Exception as e:
+                        print(f"⚠️  Warning: Error in intra-video comparison: {e}")
+                        continue
+            
+            if not merged:
+                # No matches found, keep as new entity
+                final_entities.append(entity)
+            
+            entity_time = time.time() - entity_start
+            if entity_time > 2.0:  # Log slow entities
+                print(f"        ⏰ Slow entity ({entity_time:.3f}s): '{entity.get('entity_name', 'unknown')}'")
+        
+        # Step 3: Fix all statements to use canonical entity IDs
+        print(f"      🔧 Fixing statements with {len(entity_mappings)} entity mappings...")
+        
+        fixed_statements = []
+        for stmt in all_statements:
+            try:
+                fixed_stmt = stmt.copy()
+                
+                # Update source entity reference
+                source_id = fixed_stmt["source_entity_id"]
+                if source_id in entity_mappings:
+                    new_source_id = entity_mappings[source_id]
+                    fixed_stmt["source_entity_id"] = new_source_id
+                    # Update statement ID to reflect change
+                    fixed_stmt["_id"] = fixed_stmt["_id"].replace(source_id, new_source_id)
+                
+                # Update target entity reference  
+                target_id = fixed_stmt["target_entity_id"]
+                if target_id in entity_mappings:
+                    new_target_id = entity_mappings[target_id]
+                    fixed_stmt["target_entity_id"] = new_target_id
+                    # Update statement ID to reflect change
+                    fixed_stmt["_id"] = fixed_stmt["_id"].replace(target_id, new_target_id)
+                
+                fixed_statements.append(fixed_stmt)
+            except Exception as e:
+                print(f"⚠️  Warning: Error fixing statement: {e}")
+                fixed_statements.append(stmt)  # Keep original if fixing fails
+        
+        # Step 4: Remove duplicate statements (same _id)
+        statement_dict = {}
+        for stmt in fixed_statements:
+            stmt_id = stmt["_id"]
+            if stmt_id not in statement_dict:
+                statement_dict[stmt_id] = stmt
+        
+        final_statements = list(statement_dict.values())
+        
+        # Print final statistics
+        total_time = time.time() - start_time
+        inter_batch_reduction = len(unique_entities) - len(final_entities)
+        statement_reduction = len(all_statements) - len(final_statements)
+        
+        print(f"      ✅ Cross-batch deduplication complete ({total_time:.3f}s)")
+        print(f"      📊 Entity reduction: {len(all_entities)} → {len(final_entities)} ({inter_batch_reduction} duplicates removed)")
+        print(f"      📊 Statement reduction: {len(all_statements)} → {len(final_statements)} ({statement_reduction} duplicates removed)")
+        print(f"      📊 Disambiguation stats: {exact_matches} exact, {high_similarity_matches} high-sim, {llm_disambiguations} LLM calls")
+        
+        return final_entities, final_statements
         """Main disambiguation process for a batch with optimized exact matching and detailed timing."""
         start_time = time.time()
         print(f"    🔍 Disambiguating {len(batch_entities)} entities...")
@@ -1007,7 +1135,7 @@ Consider:
         }
 
     def extract_knowledge_graph(self, transcript_text: str, video_id: str, video_title: str, video_url: str) -> Dict[str, Any]:
-        """Extract knowledge graph with multi-pass refinement loop and disambiguation."""
+        """Extract knowledge graph with multi-pass refinement loop (disambiguation moved to end)."""
         print(f"    🔄 Starting multi-pass extraction...")
         
         # Initial extraction
@@ -1034,54 +1162,87 @@ Consider:
             else:
                 print(f"    🔄 LLM wants to continue refining...")
         
-        # Validate connectivity before disambiguation
+        # Validate connectivity (no disambiguation at batch level - done at video level)
         validator = ConnectivityValidator(video_id)
         is_valid, orphaned_entities, stats = validator.validate_connectivity(
             result.get("entities", []), result.get("statements", [])
         )
         
-        print(f"    📊 Pre-disambiguation connectivity: {stats['connected_entities']}/{stats['total_entities']} entities connected")
+        print(f"    📊 Batch connectivity: {stats['connected_entities']}/{stats['total_entities']} entities connected")
         
         if orphaned_entities:
-            print(f"    ⚠️  Found {len(orphaned_entities)} orphaned entities, attempting to connect...")
-            # Could add orphan connection logic here if needed
-        
-        # Apply entity disambiguation with safe unpacking
-        try:
-            disambiguation_result = self.disambiguate_batch_entities(
-                result.get("entities", []), result.get("statements", [])
-            )
-            
-            if disambiguation_result is None:
-                print("    ⚠️  Disambiguation returned None, using original entities/statements")
-                final_entities = result.get("entities", [])
-                final_statements = result.get("statements", [])
-            elif isinstance(disambiguation_result, tuple) and len(disambiguation_result) == 2:
-                final_entities, final_statements = disambiguation_result
-            else:
-                print(f"    ⚠️  Disambiguation returned unexpected format: {type(disambiguation_result)}")
-                final_entities = result.get("entities", [])
-                final_statements = result.get("statements", [])
-        except Exception as e:
-            print(f"    ❌ Error in disambiguation: {e}")
-            print("    🔄 Continuing with original entities/statements")
-            final_entities = result.get("entities", [])
-            final_statements = result.get("statements", [])
-        
-        # Update result with disambiguated entities and statements
-        result["entities"] = final_entities
-        result["statements"] = final_statements
-        
-        # Final connectivity validation
-        final_is_valid, final_orphaned, final_stats = validator.validate_connectivity(
-            final_entities, final_statements
-        )
-        
-        print(f"    📊 Final connectivity: {final_stats['connected_entities']}/{final_stats['total_entities']} entities connected")
+            print(f"    ⚠️  Found {len(orphaned_entities)} orphaned entities in batch")
         
         return result
 
-    def save_knowledge_graph_to_mongodb(self, kg_data: Dict[str, Any], batch_id: str, video_id: str) -> bool:
+    def bulk_save_knowledge_graph(self, entities: List[Dict], statements: List[Dict], video_id: str) -> bool:
+        """Bulk save entities and statements to MongoDB with optimized operations."""
+        try:
+            start_time = time.time()
+            stats = {"entities": 0, "statements": 0}
+            
+            # Bulk insert/update entities
+            if entities:
+                print(f"        💾 Bulk saving {len(entities)} entities...")
+                
+                # Add embeddings to entities that don't have them
+                entities_with_embeddings = []
+                for entity in entities:
+                    if not entity.get("name_description_embedding"):
+                        embedding = self.generate_entity_embedding(
+                            entity.get("entity_name", ""),
+                            entity.get("entity_description", "")
+                        )
+                        if embedding:
+                            entity["name_description_embedding"] = embedding
+                    
+                    entities_with_embeddings.append(entity)
+                
+                # Use individual upserts instead of bulk_write to avoid the error
+                successful_entities = 0
+                for entity in entities_with_embeddings:
+                    try:
+                        result = self.entities.replace_one(
+                            {"entity_id": entity["entity_id"]},
+                            entity,
+                            upsert=True
+                        )
+                        successful_entities += 1
+                    except Exception as e:
+                        print(f"        ⚠️  Failed to save entity {entity.get('entity_name', 'unknown')}: {e}")
+                
+                stats["entities"] = successful_entities
+            
+            # Bulk insert statements
+            if statements:
+                print(f"        💾 Bulk saving {len(statements)} statements...")
+                
+                # Insert statements in batches
+                batch_size = 1000
+                successful_statements = 0
+                
+                for i in range(0, len(statements), batch_size):
+                    batch_stmts = statements[i:i + batch_size]
+                    try:
+                        result = self.statements.insert_many(batch_stmts, ordered=False)
+                        successful_statements += len(result.inserted_ids)
+                    except BulkWriteError as bwe:
+                        # Count successful inserts
+                        successful_statements += bwe.details.get('nInserted', 0)
+                        failed_count = len(bwe.details.get('writeErrors', []))
+                        print(f"        ⚠️  {failed_count} statement inserts failed (likely duplicates)")
+                    except Exception as e:
+                        print(f"        ⚠️  Batch statement insert failed: {e}")
+                
+                stats["statements"] = successful_statements
+            
+            save_time = time.time() - start_time
+            print(f"        ✅ Bulk save complete ({save_time:.3f}s): {stats['entities']} entities, {stats['statements']} statements")
+            return True
+            
+        except Exception as e:
+            print(f"        ❌ Error in bulk save: {e}")
+            return False
         """Save extracted knowledge graph data to MongoDB collections."""
         try:
             stats = {"entities": 0, "statements": 0}
@@ -1221,7 +1382,7 @@ Consider:
         return "\n".join(transcript_parts)
 
     def process_video_in_batches(self, video_info: Dict[str, Any], batch_size: int = 200, overlap: int = 20, max_batch_size: int = 1000) -> bool:
-        """Process a single video's segments in batches with overlap, multi-pass extraction, and disambiguation."""
+        """Process a single video's segments in batches, aggregate all data, then deduplicate and save."""
         video_id = video_info.get("video_id", "")
         video_title = video_info.get("title", "Unknown Title")
         video_url = video_info.get("video_url", "")
@@ -1244,10 +1405,14 @@ Consider:
             
             print(f"    🎯 Optimal batch size: {optimal_batch_size} ({num_batches} batches)")
             
+            # Aggregate all entities and statements from all batches
+            all_entities = []
+            all_statements = []
+            
             batch_num = 1
             start_idx = 0
-            total_entities = 0
-            total_statements = 0
+            
+            print(f"    🔄 Extracting knowledge graphs from all batches...")
             
             while start_idx < len(segments):
                 end_idx = min(start_idx + optimal_batch_size, len(segments))
@@ -1260,20 +1425,28 @@ Consider:
                     context_segments = segments[context_start:start_idx]
                     process_segments = segments[start_idx:end_idx]
                 
-                print(f"    🔄 Processing batch {batch_num}/{num_batches}")
-                print(f"      📋 Context segments: {len(context_segments)}, Processing segments: {len(process_segments)}")
+                print(f"      📦 Batch {batch_num}/{num_batches}: {len(process_segments)} segments")
                 
                 transcript_text = self.create_batch_transcript(context_segments, process_segments)
                 
                 batch_id = f"{video_id}_batch_{batch_num}"
                 kg_data = self.extract_knowledge_graph(transcript_text, video_id, video_title, video_url)
                 
-                if self.save_knowledge_graph_to_mongodb(kg_data, batch_id, video_id):
-                    total_entities += len(kg_data.get("entities", []))
-                    total_statements += len(kg_data.get("statements", []))
-                else:
-                    print(f"    ❌ Failed to save batch {batch_num}")
-                    return False
+                # Add batch metadata to entities and statements
+                for entity in kg_data.get("entities", []):
+                    entity["batch_id"] = batch_id
+                    entity["video_id"] = video_id
+                    entity["extracted_at"] = datetime.now(timezone.utc)
+                    entity["extractor_version"] = "enhanced_kg_extractor_v1.0"
+                
+                for statement in kg_data.get("statements", []):
+                    statement["batch_id"] = batch_id
+                    statement["extracted_at"] = datetime.now(timezone.utc)
+                    statement["extractor_version"] = "enhanced_kg_extractor_v1.0"
+                
+                # Aggregate to master lists
+                all_entities.extend(kg_data.get("entities", []))
+                all_statements.extend(kg_data.get("statements", []))
                 
                 start_idx = end_idx
                 batch_num += 1
@@ -1281,8 +1454,27 @@ Consider:
                 if start_idx >= len(segments):
                     break
             
-            print(f"    ✅ Video processing complete: {total_entities} entities, {total_statements} statements across {num_batches} batches")
-            return True
+            print(f"    📊 Extraction complete: {len(all_entities)} entities, {len(all_statements)} statements across {num_batches} batches")
+            
+            # Now deduplicate across ALL batches
+            print(f"    🔍 Starting cross-batch deduplication...")
+            final_entities, final_statements = self.deduplicate_all_entities(all_entities, all_statements, video_id)
+            
+            print(f"    📊 After deduplication: {len(final_entities)} unique entities, {len(final_statements)} statements")
+            
+            # Bulk save to MongoDB
+            print(f"    💾 Bulk saving to MongoDB...")
+            success = self.bulk_save_knowledge_graph(final_entities, final_statements, video_id)
+            
+            if success:
+                dedup_reduction = ((len(all_entities) - len(final_entities)) / len(all_entities)) * 100 if all_entities else 0
+                print(f"    ✅ Video processing complete!")
+                print(f"      📊 Final: {len(final_entities)} entities, {len(final_statements)} statements")
+                print(f"      🎯 Deduplication: {dedup_reduction:.1f}% reduction in entities")
+                return True
+            else:
+                print(f"    ❌ Failed to save aggregated data")
+                return False
             
         except Exception as e:
             print(f"    ❌ Error processing video: {e}")
