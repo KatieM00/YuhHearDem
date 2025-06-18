@@ -828,6 +828,7 @@ class ParliamentaryGraphQuerier:
                 
                 # Add timestamp parameter
                 timestamped_url = f"{base_url}&t={int(start_time)}s" if start_time else base_url
+                logger.debug(f"Constructed URL for segment {segment_id}: {timestamped_url} (start_time: {start_time})")
                 
                 provenance_details[segment_id] = {
                     "segment_id": segment_id,
@@ -900,7 +901,7 @@ class ParliamentaryGraphQuerier:
                                     "target": entity2,
                                     "label": "government connection",
                                     "predicate": "government_related",
-                                    "strength": 5,
+                                    "strength": 7,
                                     "bridge": True
                                 })
                             
@@ -913,11 +914,76 @@ class ParliamentaryGraphQuerier:
                                     "target": entity2,
                                     "label": "policy connection",
                                     "predicate": "policy_related",
-                                    "strength": 4,
+                                    "strength": 6,
+                                    "bridge": True
+                                })
+                            
+                            # Speaker/Person bridges
+                            elif self._are_speaker_related(node1, node2):
+                                bridge_edges.append({
+                                    "source_uri": entity1,
+                                    "target_uri": entity2,
+                                    "source": entity1,
+                                    "target": entity2,
+                                    "label": "speaker connection",
+                                    "predicate": "speaker_related",
+                                    "strength": 7,
+                                    "bridge": True
+                                })
+                            
+                            # Institutional bridges
+                            elif self._are_institutional_related(node1, node2):
+                                bridge_edges.append({
+                                    "source_uri": entity1,
+                                    "target_uri": entity2,
+                                    "source": entity1,
+                                    "target": entity2,
+                                    "label": "institutional connection",
+                                    "predicate": "institutional_related",
+                                    "strength": 6,
+                                    "bridge": True
+                                })
+                            
+                            # Geographic/Constituency bridges
+                            elif self._are_geographic_related(node1, node2):
+                                bridge_edges.append({
+                                    "source_uri": entity1,
+                                    "target_uri": entity2,
+                                    "source": entity1,
+                                    "target": entity2,
+                                    "label": "geographic connection",
+                                    "predicate": "geographic_related",
+                                    "strength": 5,
+                                    "bridge": True
+                                })
+                            
+                            # Broader topic domain bridges
+                            elif self._are_topic_domain_related(node1, node2):
+                                bridge_edges.append({
+                                    "source_uri": entity1,
+                                    "target_uri": entity2,
+                                    "source": entity1,
+                                    "target": entity2,
+                                    "label": "topic domain connection",
+                                    "predicate": "topic_domain_related",
+                                    "strength": 5,
+                                    "bridge": True
+                                })
+                            
+                            # Parliamentary procedure bridges
+                            elif self._are_procedure_related(node1, node2):
+                                bridge_edges.append({
+                                    "source_uri": entity1,
+                                    "target_uri": entity2,
+                                    "source": entity1,
+                                    "target": entity2,
+                                    "label": "procedural connection",
+                                    "predicate": "procedure_related",
+                                    "strength": 5,
                                     "bridge": True
                                 })
             
-            return bridge_edges[:10]  # Limit bridge connections
+            return bridge_edges[:50]  # Allow many more bridge connections
             
         except Exception as e:
             logger.warning(f"Error finding bridge connections: {e}")
@@ -978,6 +1044,90 @@ class ParliamentaryGraphQuerier:
                 return True
         
         return False
+    
+    def _are_speaker_related(self, node1: Dict, node2: Dict) -> bool:
+        """Check if two nodes are speaker/person related."""
+        speaker_terms = ["honourable", "minister", "mp", "senator", "prime", "leader", "chairman", "speaker"]
+        person_indicators = ["mr", "mrs", "ms", "dr", "hon", "rt", "right"]
+        
+        name1 = (node1.get("name", "") + " " + node1.get("type", "")).lower()
+        name2 = (node2.get("name", "") + " " + node2.get("type", "")).lower()
+        
+        # Check for person-type entities
+        person1 = any(term in name1 for term in speaker_terms + person_indicators)
+        person2 = any(term in name2 for term in speaker_terms + person_indicators)
+        
+        # Also check for shared name words (same person in different contexts)
+        words1 = set(name1.split())
+        words2 = set(name2.split())
+        shared_words = words1.intersection(words2)
+        
+        return (person1 and person2) or (len(shared_words) >= 2 and any(word in speaker_terms for word in shared_words))
+    
+    def _are_institutional_related(self, node1: Dict, node2: Dict) -> bool:
+        """Check if two nodes are institutional related."""
+        institution_terms = ["ministry", "department", "commission", "board", "authority", "corporation", 
+                           "agency", "committee", "parliament", "house", "senate", "cabinet", "office"]
+        
+        name1 = (node1.get("name", "") + " " + node1.get("type", "") + " " + node1.get("description", "")).lower()
+        name2 = (node2.get("name", "") + " " + node2.get("type", "") + " " + node2.get("description", "")).lower()
+        
+        inst1 = any(term in name1 for term in institution_terms)
+        inst2 = any(term in name2 for term in institution_terms)
+        
+        return inst1 and inst2
+    
+    def _are_geographic_related(self, node1: Dict, node2: Dict) -> bool:
+        """Check if two nodes are geographic/constituency related."""
+        geo_terms = ["parish", "constituency", "christ church", "st michael", "st james", "st peter", 
+                    "st andrew", "st joseph", "st john", "st philip", "st lucy", "st thomas", "st george",
+                    "bridgetown", "barbados", "caribbean", "region", "area", "district", "community"]
+        
+        name1 = (node1.get("name", "") + " " + node1.get("description", "")).lower()
+        name2 = (node2.get("name", "") + " " + node2.get("description", "")).lower()
+        
+        # Check for shared geographic terms
+        for term in geo_terms:
+            if term in name1 and term in name2:
+                return True
+                
+        return False
+    
+    def _are_topic_domain_related(self, node1: Dict, node2: Dict) -> bool:
+        """Check if two nodes are in related topic domains."""
+        topic_domains = {
+            "infrastructure": ["water", "roads", "transport", "utilities", "electricity", "sewage", "drainage"],
+            "social": ["health", "education", "welfare", "social", "housing", "family", "children"],
+            "economic": ["economy", "finance", "budget", "tax", "business", "trade", "investment", "jobs"],
+            "governance": ["parliament", "government", "law", "legal", "court", "justice", "administration"],
+            "environment": ["environment", "climate", "waste", "conservation", "energy", "sustainability"],
+            "culture": ["culture", "arts", "music", "heritage", "festival", "tourism", "sport"]
+        }
+        
+        name1 = (node1.get("name", "") + " " + node1.get("description", "")).lower()
+        name2 = (node2.get("name", "") + " " + node2.get("description", "")).lower()
+        
+        # Check if both nodes belong to the same topic domain
+        for domain, terms in topic_domains.items():
+            domain1 = any(term in name1 for term in terms)
+            domain2 = any(term in name2 for term in terms)
+            if domain1 and domain2:
+                return True
+                
+        return False
+    
+    def _are_procedure_related(self, node1: Dict, node2: Dict) -> bool:
+        """Check if two nodes are parliamentary procedure related."""
+        procedure_terms = ["motion", "bill", "act", "resolution", "amendment", "debate", "question", 
+                          "committee", "session", "sitting", "reading", "vote", "division", "order"]
+        
+        name1 = (node1.get("name", "") + " " + node1.get("type", "")).lower()
+        name2 = (node2.get("name", "") + " " + node2.get("type", "")).lower()
+        
+        proc1 = any(term in name1 for term in procedure_terms)
+        proc2 = any(term in name2 for term in procedure_terms)
+        
+        return proc1 and proc2
     
     def _detect_temporal_intent(self, query: str) -> Dict[str, Any]:
         """Detect if user is asking for recent/temporal information."""
@@ -1050,7 +1200,7 @@ class ParliamentaryGraphQuerier:
             
             # Get only the top search result entity IDs (much more selective)
             seed_entity_ids = {result["uri"] for result in search_results[:min(limit*2, 40)] if "uri" in result}  # Use more seeds
-            logger.info(f"Starting with {len(seed_entity_ids)} seed entities")
+            logger.info(f"Starting with {len(seed_entity_ids)} seed entities: {list(seed_entity_ids)[:10]}")
             
             # Get entities data for seeds only
             entities_data = list(self.entities.find(
@@ -1081,6 +1231,7 @@ class ParliamentaryGraphQuerier:
             ]
             
             statements_data = list(self.statements.aggregate(statements_pipeline))
+            logger.info(f"Found {len(statements_data)} statements for seed entities")
             
             # If we need more context and hops > 1, get 1-hop neighbors selectively
             if hops > 1 and len(statements_data) < 80:
@@ -1145,6 +1296,7 @@ class ParliamentaryGraphQuerier:
             
             # Get provenance details only for the most relevant segments
             provenance_details = self.get_provenance_details(segment_ids[:15])
+            logger.debug(f"Retrieved provenance details for {len(provenance_details)} segments out of {len(segment_ids[:15])} requested")
             
             # Enhance statements with provenance info and temporal scoring
             enhanced_statements = []
@@ -1168,6 +1320,7 @@ class ParliamentaryGraphQuerier:
                 if segment_id and segment_id in provenance_details:
                     provenance = provenance_details[segment_id]
                     enhanced_stmt["provenance"] = provenance
+                    logger.debug(f"Added provenance to statement: {stmt.get('relationship_description', '')[:50]}... with URL: {provenance.get('timestamped_url', 'NO_URL')}")
                     
                     # Get video published date for temporal scoring
                     video_date = None
@@ -1229,7 +1382,7 @@ class ParliamentaryGraphQuerier:
             else:
                 logger.info(f"🕒 Light temporal boost applied with {recent_count}/{total_count} recent results")
             
-            enhanced_statements = enhanced_statements[:25]  # Much smaller limit
+            enhanced_statements = enhanced_statements[:100]  # Increased limit to capture more relationships
             
             # Build temporal metadata for the LLM
             temporal_metadata = {
@@ -1272,6 +1425,104 @@ class ParliamentaryGraphQuerier:
                 "summary": f"Error searching for: {query}",
                 "error": str(e)
             }
+
+    def _streamline_results_for_llm(self, full_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert full search results to minimal structure for LLM."""
+        try:
+            # Streamline entities
+            minimal_entities = []
+            for entity in full_results.get("entities", [])[:20]:
+                minimal_entity = {
+                    "id": entity.get("entity_id"),
+                    "name": entity.get("entity_name"),
+                    "type": entity.get("entity_type")
+                }
+                # Only include description if it's meaningful and not too long
+                desc = entity.get("entity_description", "")
+                if desc and len(desc) < 200 and desc.lower() != "unknown":
+                    minimal_entity["description"] = desc[:200]
+                minimal_entities.append(minimal_entity)
+            
+            # Streamline statements with inline provenance
+            minimal_statements = []
+            provenance_data = full_results.get("provenance", {})
+            
+            for stmt in full_results.get("statements", [])[:100]:
+                minimal_stmt = {
+                    "source": stmt.get("source_entity_id"),
+                    "target": stmt.get("target_entity_id"),
+                    "relationship": stmt.get("relationship_description"),
+                    "strength": stmt.get("relationship_strength", 5)
+                }
+                
+                # Try to get provenance from statement first
+                if "provenance" in stmt and stmt["provenance"]:
+                    prov = stmt["provenance"]
+                    # Look for timestamped_url first (with timestamp), then fallback to video_url
+                    if "timestamped_url" in prov:
+                        minimal_stmt["source_url"] = prov["timestamped_url"]
+                    elif "video_url" in prov:
+                        minimal_stmt["source_url"] = prov["video_url"]
+                    elif "youtube_url" in prov:  # Legacy field support
+                        minimal_stmt["source_url"] = prov["youtube_url"]
+                    if "video_title" in prov:
+                        minimal_stmt["source_title"] = prov["video_title"]
+                # Otherwise try to get from provenance_details using segment_id
+                elif "provenance_segment_id" in stmt and stmt["provenance_segment_id"] in provenance_data:
+                    prov = provenance_data[stmt["provenance_segment_id"]]
+                    # Look for timestamped_url first (with timestamp), then fallback to video_url  
+                    if "timestamped_url" in prov:
+                        minimal_stmt["source_url"] = prov["timestamped_url"]
+                    elif "video_url" in prov:
+                        minimal_stmt["source_url"] = prov["video_url"]
+                    elif "youtube_url" in prov:  # Legacy field support
+                        minimal_stmt["source_url"] = prov["youtube_url"]
+                    if "video_title" in prov:
+                        minimal_stmt["source_title"] = prov["video_title"]
+                        
+                # Debug log if no URL found but title exists
+                if "source_title" in minimal_stmt and "source_url" not in minimal_stmt:
+                    logger.debug(f"Statement has title but no URL: {minimal_stmt['relationship'][:50]}...")
+                    # Show available provenance fields for debugging
+                    if "provenance" in stmt and stmt["provenance"]:
+                        prov_keys = list(stmt["provenance"].keys())
+                        logger.debug(f"Available provenance fields: {prov_keys}")
+                    elif "provenance_segment_id" in stmt and stmt["provenance_segment_id"] in provenance_data:
+                        prov_keys = list(provenance_data[stmt["provenance_segment_id"]].keys())
+                        logger.debug(f"Available provenance_data fields: {prov_keys}")
+                    else:
+                        logger.debug(f"No provenance data found for segment_id: {stmt.get('provenance_segment_id', 'NONE')}")
+                
+                minimal_statements.append(minimal_stmt)
+            
+            # Simple temporal context
+            temporal_analysis = full_results.get("temporal_analysis", {})
+            date_range = None
+            if temporal_analysis.get("oldest_content_date") and temporal_analysis.get("newest_content_date"):
+                oldest_year = temporal_analysis["oldest_content_date"][:4]
+                newest_year = temporal_analysis["newest_content_date"][:4]
+                date_range = f"{oldest_year}-{newest_year}"
+            
+            minimal_temporal = {
+                "found_recent": temporal_analysis.get("recent_content_found", 0) > 0,
+                "date_range": date_range
+            }
+            
+            # Build minimal result
+            minimal_result = {
+                "query": full_results.get("query"),
+                "entities": minimal_entities,
+                "statements": minimal_statements,
+                "temporal_context": minimal_temporal,
+                "summary": f"Found {len(minimal_entities)} entities and {len(minimal_statements)} relationships"
+            }
+            
+            return minimal_result
+            
+        except Exception as e:
+            logger.error(f"Error streamlining results: {e}")
+            # Return original if streamlining fails
+            return full_results
 
     def close(self):
         """Close database connection."""
@@ -1503,7 +1754,7 @@ class ParliamentarySystem:
                         "query": query,
                         "entities": [],
                         "statements": [],
-                        "provenance": {},
+                        "temporal_context": {"found_recent": False, "date_range": None},
                         "summary": f"No parliamentary data found for: {query}"
                     }, indent=2)
                 
@@ -1519,8 +1770,12 @@ class ParliamentarySystem:
                 
                 logger.info(f"🎯 Found {len(search_results['entities'])} entities, {len(search_results['statements'])} statements")
                 
-                # Return formatted JSON string
-                return json.dumps(search_results, indent=2, default=str)
+                # Streamline results for LLM
+                minimal_results = self.querier._streamline_results_for_llm(search_results)
+                logger.info(f"📦 Streamlined to {len(minimal_results['entities'])} entities, {len(minimal_results['statements'])} statements")
+                
+                # Return minimal JSON string
+                return json.dumps(minimal_results, indent=2, default=str)
                 
             except Exception as e:
                 logger.error(f"Parliament search failed: {e}")
@@ -1528,9 +1783,8 @@ class ParliamentarySystem:
                     "query": query,
                     "entities": [],
                     "statements": [],
-                    "provenance": {},
-                    "summary": f"Error searching parliament: {str(e)}",
-                    "error": str(e)
+                    "temporal_context": {"found_recent": False, "date_range": None},
+                    "summary": f"Error searching parliament: {str(e)}"
                 }, indent=2)
         
         def clear_session_graph(reason: str = "Topic change detected") -> str:
