@@ -1178,7 +1178,150 @@ class ParliamentaryGraphQuerier:
             logger.warning(f"Error calculating recency boost: {e}")
             return 1.0
 
-    def get_structured_search_results(self, query: str, limit: int = 20, hops: int = 2) -> Dict[str, Any]:
+    def _filter_hop_candidates(self, connected_entity_ids: set, query: str) -> List[str]:
+        """Filter hop candidates using relative degree-aware strategy to avoid hub nodes."""
+        if not connected_entity_ids:
+            return []
+            
+        # Get entity details and calculate degrees for candidates
+        entity_details = list(self.entities.find(
+            {"entity_id": {"$in": list(connected_entity_ids)}},
+            {"entity_id": 1, "entity_name": 1, "entity_description": 1}
+        ))
+        
+        # Calculate degrees for all candidates
+        candidate_degrees = {}
+        for entity_id in connected_entity_ids:
+            degree = self.statements.count_documents({
+                "$or": [
+                    {"source_entity_id": entity_id},
+                    {"target_entity_id": entity_id}
+                ]
+            })
+            candidate_degrees[entity_id] = degree
+        
+        # Get degree distribution statistics from the entire graph
+        degree_stats = self._get_degree_distribution_stats()
+        
+        # Filter and score entities using relative metrics
+        scored_entities = []
+        query_lower = query.lower()
+        
+        for entity in entity_details:
+            entity_id = entity["entity_id"]
+            degree = candidate_degrees.get(entity_id, 0)
+            name = entity.get("entity_name", "").lower()
+            desc = entity.get("entity_description", "").lower()
+            
+            # Skip ultra-hubs (>99th percentile)
+            if degree > degree_stats["p99"]:
+                continue
+                
+            # Calculate base relevance score from query matching
+            relevance_score = 0
+            query_terms = query_lower.split()
+            for term in query_terms:
+                if term in name or term in desc:
+                    relevance_score += 10
+            
+            # Apply degree-based penalty/boost using relative position
+            hub_penalty = self._calculate_hub_penalty(degree, degree_stats)
+            relevance_score *= hub_penalty
+            
+            # Boost for moderate connectivity (25th-95th percentile range)
+            if degree_stats["p25"] <= degree <= degree_stats["p95"]:
+                relevance_score *= 1.2
+                
+            # Penalize isolated nodes (<5th percentile)
+            if degree < degree_stats["p5"]:
+                relevance_score *= 0.5
+                
+            scored_entities.append((entity_id, relevance_score, degree))
+        
+        # Sort by relevance score (descending)
+        scored_entities.sort(key=lambda x: -x[1])
+        
+        # Return top 8 candidates
+        selected_ids = [entity_id for entity_id, score, degree in scored_entities[:8]]
+        
+        ultra_hubs_skipped = len([d for d in candidate_degrees.values() if d > degree_stats["p99"]])
+        logger.info(f"🎯 Hop filtering: {len(connected_entity_ids)} candidates → {len(selected_ids)} selected (skipped {ultra_hubs_skipped} ultra-hubs >p99={degree_stats['p99']})")
+        
+        return selected_ids
+    
+    def _get_degree_distribution_stats(self) -> Dict[str, float]:
+        """Calculate degree distribution statistics for the entire graph."""
+        # Use aggregation pipeline to calculate degrees efficiently
+        pipeline = [
+            {
+                "$group": {
+                    "_id": None,
+                    "source_entities": {"$addToSet": "$source_entity_id"},
+                    "target_entities": {"$addToSet": "$target_entity_id"}
+                }
+            }
+        ]
+        
+        result = list(self.statements.aggregate(pipeline))
+        if not result:
+            # Fallback if no statements
+            return {"mean": 0, "std": 1, "p5": 0, "p25": 0, "p50": 0, "p75": 0, "p95": 0, "p99": 0}
+        
+        # Get all unique entity IDs
+        all_entities = set(result[0].get("source_entities", [])) | set(result[0].get("target_entities", []))
+        
+        # Calculate degree for each entity (sample for performance if graph is very large)
+        if len(all_entities) > 10000:
+            # Sample for very large graphs
+            import random
+            sample_entities = random.sample(list(all_entities), 5000)
+        else:
+            sample_entities = list(all_entities)
+        
+        degrees = []
+        for entity_id in sample_entities:
+            degree = self.statements.count_documents({
+                "$or": [
+                    {"source_entity_id": entity_id},
+                    {"target_entity_id": entity_id}
+                ]
+            })
+            degrees.append(degree)
+        
+        if not degrees:
+            return {"mean": 0, "std": 1, "p5": 0, "p25": 0, "p50": 0, "p75": 0, "p95": 0, "p99": 0}
+        
+        # Calculate statistics
+        import numpy as np
+        degrees_array = np.array(degrees)
+        
+        return {
+            "mean": float(np.mean(degrees_array)),
+            "std": float(np.std(degrees_array)),
+            "p5": float(np.percentile(degrees_array, 5)),
+            "p25": float(np.percentile(degrees_array, 25)),
+            "p50": float(np.percentile(degrees_array, 50)),
+            "p75": float(np.percentile(degrees_array, 75)),
+            "p95": float(np.percentile(degrees_array, 95)),
+            "p99": float(np.percentile(degrees_array, 99))
+        }
+    
+    def _calculate_hub_penalty(self, degree: int, degree_stats: Dict[str, float]) -> float:
+        """Calculate hub penalty based on relative position in degree distribution."""
+        mean_degree = degree_stats["mean"]
+        std_degree = max(degree_stats["std"], 1)  # Avoid division by zero
+        
+        # Calculate z-score (how many standard deviations from mean)
+        z_score = (degree - mean_degree) / std_degree
+        
+        # Apply smooth penalty: penalty increases exponentially with z-score
+        import math
+        hub_penalty = 1.0 / (1.0 + math.exp(z_score - 1))  # Sigmoid function
+        
+        # Ensure penalty is between 0.1 and 1.0
+        return max(0.1, min(1.0, hub_penalty))
+
+    def get_structured_search_results(self, query: str, limit: int = 20, hops: int = 1) -> Dict[str, Any]:
         """Get search results as structured JSON with focused, relevant data and temporal awareness."""
         try:
             logger.info(f"🔍 Structured search for: '{query}'")
@@ -1231,7 +1374,7 @@ class ParliamentaryGraphQuerier:
             ]
             
             statements_data = list(self.statements.aggregate(statements_pipeline))
-            logger.info(f"Found {len(statements_data)} statements for seed entities")
+            logger.info(f"Found {len(statements_data)} statements for seed entities (includes all 1-hop connections, even to ultra-hubs)")
             
             # If we need more context and hops > 1, get 1-hop neighbors selectively
             if hops > 1 and len(statements_data) < 80:
@@ -1243,8 +1386,8 @@ class ParliamentaryGraphQuerier:
                     if stmt.get("target_entity_id") not in seed_entity_ids:
                         connected_entity_ids.add(stmt.get("target_entity_id"))
                 
-                # Limit to top 10 connected entities
-                connected_entity_ids = list(connected_entity_ids)[:10]
+                # Smart filtering: avoid expanding FROM high-degree hub nodes (but keep 1-hop connections TO them)
+                connected_entity_ids = self._filter_hop_candidates(connected_entity_ids, query)
                 
                 if connected_entity_ids:
                     # Get additional entity data
@@ -1282,6 +1425,7 @@ class ParliamentaryGraphQuerier:
                     ).sort("relationship_strength", -1).limit(80))
                     
                     statements_data.extend(additional_statements)
+                    logger.info(f"Added {len(additional_statements)} additional statements from {len(connected_entity_ids)} filtered hop candidates")
             
             # Collect unique segment IDs for provenance lookup (limit to top statements)
             top_statements = sorted(statements_data, 
