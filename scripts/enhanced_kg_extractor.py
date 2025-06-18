@@ -38,10 +38,11 @@ try:
     from dotenv import load_dotenv
     from sentence_transformers import SentenceTransformer
     import numpy as np
+    from json_repair import loads as json_repair_loads
 except ImportError as e:
     print(f"Missing required package: {e}")
     print("Please install required packages:")
-    print("pip install google-genai pymongo python-dotenv pydantic sentence-transformers")
+    print("pip install google-genai pymongo python-dotenv pydantic sentence-transformers json-repair")
     sys.exit(1)
 
 # Load environment variables
@@ -1019,7 +1020,7 @@ Remember: Every entity must be connected through at least one statement!"""
             )
         )
         
-        result = json.loads(response.text)
+        result = json_repair_loads(response.text)
         
         # Ensure statements have _id fields
         if "statements" in result:
